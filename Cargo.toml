@@ -1,0 +1,12 @@
+# El workspace contiene SOLO el core, igual que en ECBP Desktop: así se compila y
+# se prueba en Linux (aquí, en la VPS). `src-tauri/` será un crate aparte porque
+# compilar Tauri exige el toolchain de Windows — eso lo hace el runner del CI.
+[workspace]
+resolver = "2"
+members = ["core"]
+
+[profile.release]
+opt-level = 3      # aquí NO se optimiza por tamaño: hay AES y parsing de MP4 en el camino caliente
+lto = true
+codegen-units = 1
+strip = true
