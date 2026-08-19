@@ -215,10 +215,6 @@ impl Amp {
         }
     }
 
-    async fn preview_album(&self, album_id: &str, only_song: Option<&str>) -> Result<Preview> {
-        self.preview_album_named(album_id, only_song, "").await
-    }
-
     /// `slug` es el trocito legible de la URL (`turn-up-the-bass-single`).
     /// Cuando el álbum no está en la tienda no hay metadata de la que sacar el
     /// nombre, así que sin él no se podría buscar ninguna otra edición.

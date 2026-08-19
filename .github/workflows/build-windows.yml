@@ -17,6 +17,11 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
+    # Los secretos se declaran a nivel de job: en el `if` de un paso, `secrets`
+    # no existe y GitHub rechaza el workflow entero.
+    env:
+      WIDEVINE_DEVICE_KEY: ${{ secrets.WIDEVINE_DEVICE_KEY }}
+      WIDEVINE_CLIENT_ID: ${{ secrets.WIDEVINE_CLIENT_ID }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -88,12 +93,7 @@ jobs:
       # están, y si no el instalador sale sin ellas: la app las puede importar
       # después desde Ajustes. Nunca van dentro del binario.
       - name: Empaquetar credenciales de Widevine
-        # OJO: la condición mira el SECRETO, no `env`. Con `env.X` la variable
-        # aún no existe cuando se evalúa el `if` y el paso se salta siempre.
-        if: ${{ secrets.WIDEVINE_DEVICE_KEY != '' }}
-        env:
-          WIDEVINE_DEVICE_KEY: ${{ secrets.WIDEVINE_DEVICE_KEY }}
-          WIDEVINE_CLIENT_ID: ${{ secrets.WIDEVINE_CLIENT_ID }}
+        if: env.WIDEVINE_DEVICE_KEY != ''
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path src-tauri/resources/widevine | Out-Null
