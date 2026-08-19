@@ -110,6 +110,9 @@ pub async fn download_url(
                 album: String::new(),
                 quality_label: "Music Video".into(),
                 skipped: false,
+                secs_download: 0.0,
+                secs_decrypt: 0.0,
+                secs_total: 0.0,
             });
             Ok(r)
         }

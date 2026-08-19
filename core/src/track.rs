@@ -43,6 +43,11 @@ pub struct TrackOutcome {
     pub quality_label: String,
     /// Ya estaba en disco: no se volvió a bajar.
     pub skipped: bool,
+    /// Cuánto costó cada fase, en segundos. Va a la vista para no tener que
+    /// adivinar dónde se va el tiempo cuando algo va lento en otra máquina.
+    pub secs_download: f32,
+    pub secs_decrypt: f32,
+    pub secs_total: f32,
 }
 
 pub struct TrackJob {
@@ -94,8 +99,12 @@ pub async fn download_track(
             album: album_name,
             quality_label: job.quality.display().into(),
             skipped: true,
+            secs_download: 0.0,
+            secs_decrypt: 0.0,
+            secs_total: 0.0,
         });
     }
+    let t_start = std::time::Instant::now();
 
     // ── 1. De dónde salen los segmentos ────────────────────────────────────
     let enhanced = t["extendedAssetUrls"]["enhancedHls"].as_str().unwrap_or("");
@@ -137,6 +146,7 @@ pub async fn download_track(
         (segs, label)
     };
 
+    let t_download = std::time::Instant::now();
     // ── 2. Bajar los segmentos a un temporal ───────────────────────────────
     // Los temporales van a una carpeta propia, NO a la del usuario: ver un
     // montón de .tmp junto a la música (y que sobrevivan a un cierre a lo
@@ -172,8 +182,10 @@ pub async fn download_track(
         w.flush()?;
     }
 
+    let secs_download = t_download.elapsed().as_secs_f32();
     cancel.check()?;
 
+    let t_decrypt = std::time::Instant::now();
     // ── 3. Descifrar y montar (bloqueante: el wrapper es secuencial) ────────
     let key_uris: Vec<Option<String>> = segments.iter().map(|s| s.key_uri.clone()).collect();
     let decrypt_port = cfg.decrypt_port.clone();
@@ -193,6 +205,8 @@ pub async fn download_track(
     })
     .await
     .map_err(|e| Error::Other(format!("la tarea de descifrado se cayó: {e}")))??;
+
+    let secs_decrypt = t_decrypt.elapsed().as_secs_f32();
 
     // ── 4. Carátula, letras y etiquetas ────────────────────────────────────
     let cover = match job.cover {
@@ -228,6 +242,10 @@ pub async fn download_track(
         if cfg.embed_lrc { lrc.as_deref() } else { None },
     )?;
 
+    // La carpeta de trabajo se va si ya no queda nada dentro (falla sin ruido si
+    // otra descarga sigue usándola).
+    let _ = std::fs::remove_dir(&tmp_dir);
+
     if cfg.save_animated_artwork {
         let stem = out_path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
         crate::artwork::download_animated(cfg, &a["attributes"], &job.output_dir, &stem).await;
@@ -240,6 +258,9 @@ pub async fn download_track(
         album: album_name,
         quality_label,
         skipped: false,
+        secs_download,
+        secs_decrypt,
+        secs_total: t_start.elapsed().as_secs_f32(),
     })
 }
 

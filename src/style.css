@@ -170,3 +170,5 @@ dialog{max-height:86vh;display:flex;flex-direction:column}
 /* Un error largo se lee entero: antes se cortaba a media frase. */
 #downloads li.bad{white-space:normal;align-items:flex-start}
 #downloads li.bad span{white-space:normal;overflow:visible;word-break:break-word;line-height:1.35}
+.wv{display:flex;align-items:center;justify-content:space-between;gap:.6rem;
+  margin-top:.9rem;padding-top:.8rem;border-top:1px solid var(--line)}

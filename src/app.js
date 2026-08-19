@@ -348,9 +348,31 @@ $('btn-settings').addEventListener('click', async () => {
   try {
     cfgCache = await ecam.getConfig();
     renderSettings(cfgCache);
+    refreshWidevine();
     $('settings').showModal();
   } catch (e) {
     addRow(String(e), false);
+  }
+});
+
+async function refreshWidevine() {
+  try {
+    const ok = await ecam.widevineReady();
+    $('wv-state').textContent = ok
+      ? 'Vídeos: credenciales cargadas ✓'
+      : 'Vídeos: faltan credenciales (los videos no bajarán)';
+  } catch { /* en la vista previa no aplica */ }
+}
+
+$('wv-load').addEventListener('click', async (e) => {
+  e.preventDefault();
+  const files = await window.__TAURI__.dialog.open({ multiple: true });
+  if (!files) return;
+  try {
+    await ecam.loadWidevine(Array.isArray(files) ? files : [files]);
+    await refreshWidevine();
+  } catch (err) {
+    $('wv-state').textContent = String(err);
   }
 });
 

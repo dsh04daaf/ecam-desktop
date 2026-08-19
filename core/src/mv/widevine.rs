@@ -117,6 +117,48 @@ pub fn build_pssh(kid_base64: &str) -> Result<Vec<u8>> {
     Ok(out)
 }
 
+/// Dónde viven las credenciales del usuario.
+pub fn credentials_dir() -> std::path::PathBuf {
+    Config::config_dir().join("widevine")
+}
+
+/// ¿Están puestas?
+pub fn credentials_present() -> bool {
+    find_credential(None, "device.pem").is_some() && find_credential(None, "client_id.bin").is_some()
+}
+
+/// Instala las credenciales que el usuario elija, sin que tenga que saber dónde
+/// van ni crear carpetas.
+///
+/// Se distingue cuál es cuál por el contenido, no por el nombre: la gente los
+/// renombra y luego "no funciona" sin motivo aparente.
+pub fn install_credentials(paths: &[std::path::PathBuf]) -> Result<()> {
+    let dir = credentials_dir();
+    std::fs::create_dir_all(&dir)?;
+    let (mut key, mut id) = (false, false);
+
+    for p in paths {
+        let bytes = std::fs::read(p)?;
+        let looks_pem = bytes.starts_with(b"-----BEGIN")
+            || String::from_utf8_lossy(&bytes[..bytes.len().min(64)]).contains("PRIVATE KEY");
+        let dest = if looks_pem { dir.join("device.pem") } else { dir.join("client_id.bin") };
+        std::fs::write(&dest, &bytes)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o600));
+        }
+        if looks_pem { key = true } else { id = true }
+    }
+
+    if !key || !id {
+        return Err(Error::Config(
+            "faltan archivos: hacen falta la llave (.pem) y el ClientId".into(),
+        ));
+    }
+    Ok(())
+}
+
 pub struct Cdm {
     cenc_header: Vec<u8>,
     private_key: RsaPrivateKey,

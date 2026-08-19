@@ -45,7 +45,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let on_track = Arc::new(|i: usize, total: usize, r: &Result<ecam_core::track::TrackOutcome, ecam_core::Error>| {
         match r {
             Ok(o) if o.skipped => println!("[{i}/{total}] ya estaba: {}", o.name),
-            Ok(o) => println!("[{i}/{total}] ✓ {} [{}]", o.name, o.quality_label),
+            Ok(o) => println!(
+                "[{i}/{total}] ✓ {} [{}] · {:.1}s ({:.1} baja / {:.1} descifra)",
+                o.name, o.quality_label, o.secs_total, o.secs_download, o.secs_decrypt
+            ),
             Err(e) => println!("[{i}/{total}] ✗ {e}"),
         }
     });

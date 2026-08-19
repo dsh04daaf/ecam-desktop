@@ -178,6 +178,21 @@ struct TrackDone {
     fatal: bool,
 }
 
+/// Instala las credenciales de los music videos desde donde el usuario las
+/// tenga. Antes había que crear una carpeta a mano en %APPDATA% y adivinar los
+/// nombres de los archivos.
+#[tauri::command]
+async fn load_widevine(paths: Vec<String>) -> Result<(), String> {
+    let paths: Vec<std::path::PathBuf> = paths.into_iter().map(Into::into).collect();
+    ecam_core::mv::widevine::install_credentials(&paths).map_err(|e| e.to_string())
+}
+
+/// ¿Están puestas las credenciales de vídeo?
+#[tauri::command]
+fn widevine_ready() -> bool {
+    ecam_core::mv::widevine::credentials_present()
+}
+
 /// Abre una entidad (álbum, playlist, artista) para poder verla por dentro.
 #[tauri::command]
 async fn browse(state: State<'_, AppState>, kind: String, id: String) -> Result<Browse, String> {
@@ -257,7 +272,16 @@ async fn download(
             Ok(o) => TrackDone {
                 job, index: i, total, ok: true,
                 name: o.name.clone(),
-                detail: if o.skipped { "ya estaba".into() } else { o.quality_label.clone() },
+                detail: if o.skipped {
+                    "ya estaba".into()
+                } else {
+                    // Con el desglose a la vista, si algo va lento se ve DÓNDE
+                    // en vez de tener que suponerlo.
+                    format!(
+                        "{} · {:.1}s ({:.1} baja / {:.1} descifra)",
+                        o.quality_label, o.secs_total, o.secs_download, o.secs_decrypt
+                    )
+                },
                 fatal: false,
             },
             Err(e) => TrackDone {
@@ -324,7 +348,8 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             wrapper_state, install_distro, start_wrapper, submit_two_factor, sign_out,
-            get_config, set_config, search, browse, download, download_item, cancel
+            get_config, set_config, search, browse, download, download_item, cancel,
+            load_widevine, widevine_ready
         ])
         .on_window_event(|window, event| {
             // Al cerrar: matar el wrapper y apagar la distro. Si no, la VM de WSL
