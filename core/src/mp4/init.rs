@@ -9,7 +9,7 @@
 //!   * `sbgp`/`sgpd` de tipo `seig`/`seam` describen el cifrado por grupos: si se
 //!     quedan, el reproductor cree que el archivo sigue protegido.
 
-use super::{be_u32, boxes, find, mk, mk_into, rebuild, FourCc};
+use super::{be_u32, boxes, find, is_crypto_group, mk, mk_into, rebuild, FourCc};
 
 /// Lo que el `tenc` dice sobre el cifrado del track.
 #[derive(Debug, Clone, Default)]
@@ -120,13 +120,6 @@ fn transform_stsd(payload: &[u8]) -> (Vec<u8>, TencInfo) {
     out.extend_from_slice(&1u32.to_be_bytes()); // entry_count = 1, SIEMPRE
     out.extend_from_slice(&clean_entry);
     (out, tenc)
-}
-
-/// ¿Es un `sbgp`/`sgpd` que describe cifrado? Se mira el `grouping_type`.
-fn is_crypto_group(kind: FourCc, payload: &[u8]) -> bool {
-    (&kind == b"sbgp" || &kind == b"sgpd")
-        && payload.len() >= 8
-        && matches!(&payload[4..8], b"seig" | b"seam")
 }
 
 fn transform_stbl(payload: &[u8], tenc: &mut TencInfo) -> Vec<u8> {

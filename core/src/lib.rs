@@ -10,6 +10,7 @@
 
 pub mod amp;
 pub mod artwork;
+pub mod cancel;
 pub mod collection;
 pub mod config;
 pub mod error;

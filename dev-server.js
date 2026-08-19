@@ -35,6 +35,7 @@ function rpc(args) {
 
 // ── comandos ───────────────────────────────────────────────────────────────
 const jobs = new Map();      // job -> [sucesos pendientes]
+const procs = new Map();     // job -> proceso, para poder cancelarlo de verdad
 let seq = 1;
 
 const commands = {
@@ -49,10 +50,16 @@ const commands = {
   async submit_two_factor() { return { preview: true }; },
   async sign_out() { throw new Error('en la vista previa no se cierra la sesión de la VPS'); },
 
+  async download_item({ kind, id, quality }) {
+    const { url } = await rpc(['url', kind, id]);
+    return commands.download({ url, quality });
+  },
+
   async download({ url, quality }) {
     const job = seq++;
     jobs.set(job, []);
     const p = spawn(RPC, ['download', url, quality || 'alac'], { env: { ...process.env, ECAM_OUT: OUT } });
+    procs.set(job, p);
     let buf = '';
     p.stdout.on('data', (d) => {
       buf += d;
@@ -63,11 +70,15 @@ const commands = {
         try { jobs.get(job)?.push({ ...JSON.parse(l), job }); } catch {}
       }
     });
-    p.on('close', () => jobs.get(job)?.push({ event: 'closed', job }));
+    p.on('close', () => { procs.delete(job); jobs.get(job)?.push({ event: 'finished', ok: true, cancelled: p.killed, job }, { event: 'closed', job }); });
     return job;
   },
 
-  async cancel() { return { preview: true }; },
+  async cancel({ job }) {
+    // En la vista previa cancelar es matar el proceso del core.
+    procs.get(job)?.kill('SIGTERM');
+    return { cancelled: true };
+  },
   async install_distro() { throw new Error('en la vista previa la distro no aplica'); },
 };
 

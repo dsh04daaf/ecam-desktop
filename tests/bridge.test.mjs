@@ -74,6 +74,30 @@ test('se detecta estar dentro de la app aunque el puente esté roto', () => {
   assert.ok(!bridge.inApp({ location: { origin: 'http://127.0.0.1:3026' } }));
 });
 
+test('cada comando llega al core con su nombre y sus argumentos exactos', async () => {
+  const calls = [];
+  const cmds = bridge.makeCommands((cmd, args) => { calls.push([cmd, args]); return Promise.resolve(1); });
+
+  await cmds.wrapperState();
+  await cmds.startWrapper('a@b.com', 'clave');
+  await cmds.submitTwoFactor('123456');
+  await cmds.search('garrix');
+  await cmds.download('https://music.apple.com/nz/album/x/1', 'alac');
+  // Una tarjeta manda tipo e id: la URL (y con ella la tienda) la arma el core.
+  await cmds.downloadItem('artist', '123', 'alac');
+  await cmds.cancel(7);
+
+  assert.deepEqual(calls, [
+    ['wrapper_state', undefined],
+    ['start_wrapper', { user: 'a@b.com', password: 'clave' }],
+    ['submit_two_factor', { code: '123456' }],
+    ['search', { term: 'garrix' }],
+    ['download', { url: 'https://music.apple.com/nz/album/x/1', quality: 'alac' }],
+    ['download_item', { kind: 'artist', id: '123', quality: 'alac' }],
+    ['cancel', { job: 7 }],
+  ]);
+});
+
 test('la pantalla se elige según lo que diga el core', () => {
   assert.equal(bridge.screenFor({ distro_installed: false, has_session: false }), 'install');
   assert.equal(bridge.screenFor({ distro_installed: true, has_session: false }), 'login');

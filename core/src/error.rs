@@ -61,6 +61,8 @@ pub enum Error {
     WrapperUnreachable(String),
     #[error("no encontrado")]
     NotFound,
+    #[error("cancelado")]
+    Cancelled,
     #[error("se necesita media-user-token (suscripción) para esto")]
     NeedsUserToken,
     #[error("MP4 inválido: {0}")]

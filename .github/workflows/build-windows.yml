@@ -35,6 +35,12 @@ jobs:
       - name: Probar el puente de la UI
         run: node --test tests/bridge.test.mjs
 
+      # Que cada comando que llama la ventana exista de verdad en Rust. Sin
+      # esto, una pulsación puede llamar a un comando inexistente y el fallo
+      # solo aparece en la máquina del usuario.
+      - name: Probar el contrato de comandos UI-Rust
+        run: node --test tests/commands.test.mjs
+
       - name: Comprobar que no se cuela ninguna credencial en el binario
         shell: pwsh
         run: |

@@ -5,7 +5,7 @@
 //! No pretende ser la interfaz de nadie: es la forma de probar el motor entero
 //! en Linux, que es justo para lo que el core no depende de Tauri.
 
-use ecam_core::{amp::Amp, collection, config::Config, Quality};
+use ecam_core::{amp::Amp, cancel::Cancel, collection, config::Config, Quality};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -48,7 +48,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    let report = collection::download_url(&cfg, &amp, &url, quality, Some(progress), Some(on_track)).await?;
+    let report = collection::download_url(&cfg, &amp, &url, quality, Some(progress), Some(on_track), &Cancel::new()).await?;
 
     println!(
         "\n{} listos, {} con problemas, {:.1} MB bajados",

@@ -6,7 +6,8 @@
 //! motor, y vigila el wrapper.
 
 use ecam_core::{
-    amp::Amp,
+    amp::{search_hits, Amp, SearchHit},
+    cancel::Cancel,
     collection,
     config::{Config, Quality},
     runtime::{Backend, Event, Runtime},
@@ -14,7 +15,7 @@ use ecam_core::{
     wrapper::Wrapper,
 };
 use serde::Serialize;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager, State};
 
@@ -25,8 +26,9 @@ struct AppState {
     amp: tokio::sync::Mutex<Option<Amp>>,
     /// Proceso del wrapper, para poder matarlo al cerrar.
     child: Mutex<Option<tokio::process::Child>>,
-    /// Descargas vivas → su bandera de cancelación.
-    jobs: Mutex<std::collections::HashMap<u64, Arc<AtomicBool>>>,
+    /// Descargas vivas → su cancelador. Se quitan al terminar: si no, el mapa
+    /// crece toda la sesión con trabajos muertos.
+    jobs: Mutex<std::collections::HashMap<u64, Cancel>>,
     seq: AtomicU64,
 }
 
@@ -155,38 +157,13 @@ async fn set_config(state: State<'_, AppState>, cfg: Config) -> Result<(), Strin
     Ok(())
 }
 
-#[derive(Serialize)]
-struct SearchHit {
-    id: String,
-    kind: String,
-    name: String,
-    artist: String,
-    artwork: String,
-}
-
 #[tauri::command]
 async fn search(state: State<'_, AppState>, term: String) -> Result<Vec<SearchHit>, String> {
     let amp = amp(&state).await?;
     let v = amp.search(&term, 25).await.map_err(|e| e.to_string())?;
-    let mut out = Vec::new();
-    for kind in ["albums", "songs", "music-videos"] {
-        let Some(items) = v["results"][kind]["data"].as_array() else { continue };
-        for it in items {
-            let a = &it["attributes"];
-            out.push(SearchHit {
-                id: it["id"].as_str().unwrap_or("").into(),
-                kind: kind.trim_end_matches('s').into(),
-                name: a["name"].as_str().unwrap_or("").into(),
-                artist: a["artistName"].as_str().unwrap_or("").into(),
-                artwork: a["artwork"]["url"]
-                    .as_str()
-                    .unwrap_or("")
-                    .replace("{w}", "200")
-                    .replace("{h}", "200"),
-            });
-        }
-    }
-    Ok(out)
+    // La conversión vive en el core y la comparte la vista previa: si cada uno
+    // aplanara los resultados a su manera, probar una no diría nada de la otra.
+    Ok(search_hits(&v))
 }
 
 #[derive(Serialize, Clone)]
@@ -197,6 +174,26 @@ struct TrackDone {
     ok: bool,
     name: String,
     detail: String,
+    /// `true` = la sesión del wrapper está muerta; reintentar no sirve.
+    fatal: bool,
+}
+
+/// Descarga por tipo e id, sin que la UI tenga que inventarse una URL.
+///
+/// Antes la ventana construía `music.apple.com/us/...` con la tienda clavada;
+/// la metadata se pedía a la tienda equivocada y solo funcionaba de rebote por
+/// el respaldo. La tienda buena la sabe el core.
+#[tauri::command]
+async fn download_item(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    kind: String,
+    id: String,
+    quality: String,
+) -> Result<u64, String> {
+    let amp = amp(&state).await?;
+    let url = collection::url_for(&amp.storefront, &kind, &id);
+    download(app, state, url, quality).await
 }
 
 #[tauri::command]
@@ -216,13 +213,25 @@ async fn download(
     };
 
     let job = state.seq.fetch_add(1, Ordering::Relaxed);
-    let cancel = Arc::new(AtomicBool::new(false));
+    let cancel = Cancel::new();
     state.jobs.lock().unwrap().insert(job, cancel.clone());
 
+    // El progreso se acumula y se manda como mucho cuatro veces por segundo.
+    // Emitir un evento por trozo eran miles de mensajes IPC por track para
+    // pintar una barra que se mueve 60 veces por segundo como mucho.
+    let acc = Arc::new(AtomicU64::new(0));
+    let last = Arc::new(Mutex::new(std::time::Instant::now()));
     let app2 = app.clone();
+    let (acc2, last2) = (acc.clone(), last.clone());
     let progress = Arc::new(move |n: u64| {
-        let _ = app2.emit("progress", serde_json::json!({ "job": job, "bytes": n }));
+        let total = acc2.fetch_add(n, Ordering::Relaxed) + n;
+        let mut l = last2.lock().unwrap();
+        if l.elapsed() >= std::time::Duration::from_millis(250) {
+            *l = std::time::Instant::now();
+            let _ = app2.emit("progress", serde_json::json!({ "job": job, "bytes": total }));
+        }
     });
+
     let app3 = app.clone();
     let on_track = Arc::new(move |i: usize, total: usize, r: &Result<TrackOutcome, ecam_core::Error>| {
         let payload = match r {
@@ -230,22 +239,39 @@ async fn download(
                 job, index: i, total, ok: true,
                 name: o.name.clone(),
                 detail: if o.skipped { "ya estaba".into() } else { o.quality_label.clone() },
+                fatal: false,
             },
-            Err(e) => TrackDone { job, index: i, total, ok: false, name: String::new(), detail: e.to_string() },
+            Err(e) => TrackDone {
+                job, index: i, total, ok: false,
+                name: String::new(),
+                detail: e.to_string(),
+                // El core distingue "este track no se pudo" de "la sesión está
+                // muerta". Lo segundo NO se arregla reintentando: hay que
+                // relanzar el wrapper, y la UI necesita saberlo.
+                fatal: matches!(e, ecam_core::Error::Track(t) if t.kind == ecam_core::error::FailKind::WrapperDead)
+                    || matches!(e, ecam_core::Error::DecryptionCorrupted(_)),
+            },
         };
         let _ = app3.emit("track", payload);
     });
 
+    let jobs = app.state::<AppState>();
+    let _ = jobs; // el estado se recupera dentro de la tarea
+
     tauri::async_runtime::spawn(async move {
-        let res = collection::download_url(&cfg, &amp, &url, quality, Some(progress), Some(on_track)).await;
+        let res = collection::download_url(&cfg, &amp, &url, quality, Some(progress), Some(on_track), &cancel).await;
         let payload = match res {
             Ok(r) => serde_json::json!({
                 "job": job, "ok": true, "done": r.done.len(), "failed": r.failed.len(),
+                "cancelled": cancel.is_cancelled(),
                 "path": r.done.first().and_then(|d| d.path.parent().map(|p| p.display().to_string())),
             }),
+            Err(ecam_core::Error::Cancelled) => serde_json::json!({ "job": job, "ok": true, "cancelled": true, "done": 0, "failed": 0 }),
             Err(e) => serde_json::json!({ "job": job, "ok": false, "error": e.to_string() }),
         };
         let _ = app.emit("finished", payload);
+        // El trabajo ya no existe: fuera del mapa.
+        app.state::<AppState>().jobs.lock().unwrap().remove(&job);
     });
 
     Ok(job)
@@ -253,8 +279,8 @@ async fn download(
 
 #[tauri::command]
 fn cancel(state: State<'_, AppState>, job: u64) {
-    if let Some(flag) = state.jobs.lock().unwrap().get(&job) {
-        flag.store(true, Ordering::Relaxed);
+    if let Some(c) = state.jobs.lock().unwrap().get(&job) {
+        c.cancel();
     }
 }
 
@@ -279,7 +305,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             wrapper_state, install_distro, start_wrapper, submit_two_factor, sign_out,
-            get_config, set_config, search, download, cancel
+            get_config, set_config, search, download, download_item, cancel
         ])
         .on_window_event(|window, event| {
             // Al cerrar: matar el wrapper y apagar la distro. Si no, la VM de WSL

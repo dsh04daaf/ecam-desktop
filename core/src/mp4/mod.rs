@@ -123,6 +123,16 @@ where
     out
 }
 
+/// ¿Es un `sbgp`/`sgpd` que describe cifrado? Se mira el `grouping_type`.
+///
+/// Si estas cajas sobreviven, el reproductor sigue creyendo que el archivo está
+/// protegido aunque los bytes ya estén en claro.
+pub fn is_crypto_group(kind: FourCc, payload: &[u8]) -> bool {
+    (&kind == b"sbgp" || &kind == b"sgpd")
+        && payload.len() >= 8
+        && matches!(&payload[4..8], b"seig" | b"seam")
+}
+
 pub fn be_u32(data: &[u8], off: usize) -> u32 {
     if off + 4 > data.len() {
         return 0;

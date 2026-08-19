@@ -11,7 +11,7 @@
 //!     silencio, así que nunca te avisa de que falta este paso.
 
 use crate::error::{Error, Result};
-use crate::mp4::{be_u32, boxes, find, full_flags, mk, mk_into};
+use crate::mp4::{be_u32, boxes, find, full_flags, is_crypto_group, mk, mk_into};
 use aes::cipher::{BlockDecryptMut, KeyIvInit};
 use std::io::{Read, Seek, SeekFrom, Write};
 
@@ -110,12 +110,6 @@ pub fn clean_stsd(payload: &[u8]) -> Vec<u8> {
     out.extend_from_slice(&count.to_be_bytes());
     out.extend_from_slice(&entries);
     out
-}
-
-fn is_crypto_group(kind: [u8; 4], payload: &[u8]) -> bool {
-    (&kind == b"sbgp" || &kind == b"sgpd")
-        && payload.len() >= 8
-        && matches!(&payload[4..8], b"seig" | b"seam")
 }
 
 /// Quita del `moov` todo rastro de cifrado.

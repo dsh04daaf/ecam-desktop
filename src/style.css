@@ -105,7 +105,10 @@ main{flex:1;display:grid;grid-template-columns:1fr 330px;min-height:0}
 #downloads li{
   font-size:.85rem;padding:.45rem .55rem;border-radius:7px;background:var(--panel-2);
   border-left:2px solid transparent;animation:rise var(--t-med) var(--ease-out);
+  display:flex;align-items:center;gap:.5rem;justify-content:space-between;
 }
+#downloads li span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tiny{padding:.2rem .5rem;font-size:.75rem;flex:none}
 #downloads li.ok{border-left-color:var(--ok)}
 #downloads li.bad{border-left-color:var(--bad);color:var(--bad)}
 #downloads li.live{border-left-color:var(--accent);animation:rise var(--t-med) var(--ease-out),pulse 1.4s var(--ease-in-out) infinite}

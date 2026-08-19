@@ -85,26 +85,74 @@ const rows = new Map();
 
 function addRow(text, ok = true, live = false) {
   const li = document.createElement('li');
-  li.textContent = text;
   li.className = live ? 'live' : ok ? 'ok' : 'bad';
+  const span = document.createElement('span');
+  span.textContent = text;
+  li.appendChild(span);
   $('downloads').prepend(li);
   return li;
 }
 
+function setText(li, text) {
+  if (li && li.firstChild) li.firstChild.textContent = text;
+}
+
+/// El botón se añade cuando ya se sabe el id del trabajo, no antes: cancelar
+/// algo que todavía no ha arrancado no cancela nada.
+function attachCancel(li, job) {
+  const btn = document.createElement('button');
+  btn.className = 'ghost tiny';
+  btn.textContent = 'Cancelar';
+  btn.addEventListener('click', () => {
+    btn.disabled = true;
+    setText(li, 'Cancelando…');
+    ecam.cancel(job);
+  });
+  li.appendChild(btn);
+}
+
+/// Lanza una descarga y engancha su fila. Un solo camino para las dos formas de
+/// pedirla (link pegado o tarjeta pulsada).
+async function run(li, promise) {
+  let job;
+  try {
+    job = await promise;
+  } catch (e) {
+    li.className = 'bad';
+    setText(li, String(e));
+    return;
+  }
+  rows.set(job, li);
+  attachCancel(li, job);
+}
+
+const fmtMB = (n) => `${(n / 1048576).toFixed(1)} MB`;
+
+ecam.listen('progress', (p) => {
+  setText(rows.get(p.job), `Bajando… ${fmtMB(p.bytes)}`);
+});
+
 ecam.listen('track', (t) => {
+  // Sesión muerta: reintentar el track no arregla nada, hay que relanzar el
+  // motor. El core ya lo distingue; aquí se actúa en consecuencia.
+  if (t.fatal) {
+    addRow('La sesión del motor se cayó. Reiniciándolo…', false);
+    ecam.startWrapper(null, null).catch(() => {});
+  }
   addRow(t.ok ? `✓ ${t.name} — ${t.detail}` : `✗ ${t.detail}`, t.ok);
 });
 
 ecam.listen('finished', (f) => {
   const li = rows.get(f.job);
   if (li) li.remove();
+  rows.delete(f.job);
+  if (f.cancelled) return addRow(`Cancelado tras ${f.done || 0} pistas`, false);
   addRow(f.ok ? `Listo: ${f.done} pistas${f.failed ? `, ${f.failed} con problemas` : ''}` : `Error: ${f.error}`, f.ok);
 });
 
 async function startDownload(url) {
-  const li = addRow(`Bajando ${url}…`, true, true);
-  const job = await ecam.download(url, $('quality').value);
-  rows.set(job, li);
+  const li = addRow('Bajando…', true, true);
+  await run(li, ecam.download(url, $('quality').value));
 }
 
 // ── formularios ────────────────────────────────────────────────────────────
@@ -154,9 +202,12 @@ $('q').addEventListener('keydown', async (e) => {
     card.style.animationDelay = `${Math.min(i * 22, 400)}ms`;
     card.innerHTML = `<div class="art"><img src="${h.artwork}" alt="" loading="lazy" /></div>
       <div class="meta"><strong>${h.name}</strong><span>${h.artist}</span><em>${h.kind}</em></div>`;
-    card.addEventListener('click', () => {
-      const kind = h.kind === 'music-video' ? 'music-video' : h.kind;
-      startDownload(`https://music.apple.com/us/${kind}/x/${h.id}`);
+    card.addEventListener('click', async () => {
+      // Un artista son TODOS sus álbumes: eso no se dispara de una pulsación
+      // sin avisar. (Antes, además, no había forma de pararlo.)
+      if (h.bulk && !confirm(`«${h.name}» puede ser una descarga muy larga (${h.kind}). ¿Seguir?`)) return;
+      const li = addRow(`Bajando ${h.name}…`, true, true);
+      await run(li, ecam.downloadItem(h.kind, h.id, $('quality').value));
     });
     $('results').appendChild(card);
   });

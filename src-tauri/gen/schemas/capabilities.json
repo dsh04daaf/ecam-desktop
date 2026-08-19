@@ -1,0 +1,1 @@
+{"default":{"identifier":"default","description":"Permisos de la ventana principal. Lo mínimo: ni sistema de archivos suelto ni HTTP arbitrario — toda la red va por el core en Rust.","local":true,"windows":["main"],"permissions":["core:default","core:window:allow-start-dragging","opener:allow-reveal-item-in-dir","dialog:allow-open","clipboard-manager:allow-read-text"]}}

@@ -83,23 +83,32 @@
   const fetchImpl = (...a) => global.fetch(...a);
   const call = makeCall({ invoke: findInvoke(win), isApp, fetchImpl });
 
-  const bridge = {
-    findInvoke, inApp, makeCall, makeListen,
+  /// Tabla de comandos. Se construye a partir de `call` para que las pruebas
+  /// puedan verificar el NOMBRE y los ARGUMENTOS de cada uno: antes quedaban
+  /// fijados al cargar el módulo y no había forma de comprobarlos.
+  function makeCommands(call) {
+    return {
+      wrapperState: () => call('wrapper_state'),
+      installDistro: (tarball) => call('install_distro', { tarball }),
+      startWrapper: (user, password) => call('start_wrapper', { user, password }),
+      submitTwoFactor: (code) => call('submit_two_factor', { code }),
+      signOut: () => call('sign_out'),
+      getConfig: () => call('get_config'),
+      setConfig: (cfg) => call('set_config', { cfg }),
+      search: (term) => call('search', { term }),
+      download: (url, quality) => call('download', { url, quality }),
+      // Por tipo e id: la URL la arma el core con la tienda de la cuenta.
+      downloadItem: (kind, id, quality) => call('download_item', { kind, id, quality }),
+      cancel: (job) => call('cancel', { job }),
+    };
+  }
+
+  const bridge = Object.assign({
+    findInvoke, inApp, makeCall, makeListen, makeCommands,
     isApp,
     invoke: call,
     listen: makeListen({ win, isApp, fetchImpl }),
-
-    wrapperState: () => call('wrapper_state'),
-    installDistro: (tarball) => call('install_distro', { tarball }),
-    startWrapper: (user, password) => call('start_wrapper', { user, password }),
-    submitTwoFactor: (code) => call('submit_two_factor', { code }),
-    signOut: () => call('sign_out'),
-    getConfig: () => call('get_config'),
-    setConfig: (cfg) => call('set_config', { cfg }),
-    search: (term) => call('search', { term }),
-    download: (url, quality) => call('download', { url, quality }),
-    cancel: (job) => call('cancel', { job }),
-  };
+  }, makeCommands(call));
 
   /// Qué pantalla toca. Función pura para poder probarla sin abrir la app.
   bridge.screenFor = function (state) {

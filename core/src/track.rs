@@ -48,7 +48,9 @@ pub async fn download_track(
     amp: &Amp,
     job: TrackJob,
     progress: Option<Progress>,
+    cancel: &crate::cancel::Cancel,
 ) -> Result<TrackOutcome> {
+    cancel.check()?;
     let t = &job.track;
     let a = &job.album;
     let name = t["name"].as_str().unwrap_or("Desconocido").to_string();
@@ -139,6 +141,9 @@ pub async fn download_track(
                 ))));
             }
             while let Some(chunk) = resp.chunk().await? {
+                // Se mira por trozo, no por segmento: un track lossless es un
+                // solo archivo y esperar al siguiente segmento sería no cancelar.
+                cancel.check()?;
                 w.write_all(&chunk)?;
                 if let Some(p) = &progress {
                     p(chunk.len() as u64);
@@ -147,6 +152,8 @@ pub async fn download_track(
         }
         w.flush()?;
     }
+
+    cancel.check()?;
 
     // ── 3. Descifrar y montar (bloqueante: el wrapper es secuencial) ────────
     let key_uris: Vec<Option<String>> = segments.iter().map(|s| s.key_uri.clone()).collect();

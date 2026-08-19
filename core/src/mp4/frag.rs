@@ -4,7 +4,7 @@
 //! cuándo la manda es una decisión del orquestador, no de esta capa (ver
 //! `track.rs`, y el porqué en INVENTARIO_CORE.md A1).
 
-use super::{be_u16, be_u32, boxes, full_flags, mk_into, FourCc};
+use super::{be_u16, be_u32, boxes, full_flags};
 use crate::error::{Error, Result};
 
 /// Con quién se descifra. Es un trait para poder probar toda la maquinaria de
@@ -117,16 +117,6 @@ pub fn parse_trun(payload: &[u8]) -> TrunInfo {
     info
 }
 
-fn rebuild_trun(payload: &[u8], new_offset: i32) -> Vec<u8> {
-    if payload.len() < 12 || full_flags(payload) & 0x001 == 0 {
-        return payload.to_vec(); // sin campo data_offset no hay nada que mover
-    }
-    let mut out = payload[..8].to_vec();
-    out.extend_from_slice(&new_offset.to_be_bytes());
-    out.extend_from_slice(&payload[12..]);
-    out
-}
-
 /// `default_sample_size` del `tfhd`, 0 si no viene.
 pub fn tfhd_default_sample_size(traf: &[u8]) -> u32 {
     for b in boxes(traf) {
@@ -177,45 +167,6 @@ fn senc_from_traf(traf: &[u8], iv_size: usize) -> Option<Vec<SampleEnc>> {
     None
 }
 
-fn is_crypto_group(kind: FourCc, payload: &[u8]) -> bool {
-    (&kind == b"sbgp" || &kind == b"sgpd")
-        && payload.len() >= 8
-        && matches!(&payload[4..8], b"seig" | b"seam")
-}
-
-/// Cuántos bytes desaparecen del `traf` al quitarle el cifrado. Ese mismo número
-/// es el que hay que restarle al `data_offset` de cada `trun`, o el fragmento
-/// apunta a bytes que ya no están donde estaban.
-fn removed_bytes(traf: &[u8]) -> i32 {
-    let mut n = 0i32;
-    for b in boxes(traf) {
-        if matches!(&b.kind, b"senc" | b"saiz" | b"saio") || is_crypto_group(b.kind, b.payload) {
-            n += (b.payload.len() + 8) as i32;
-        }
-    }
-    n
-}
-
-fn clean_traf(traf: &[u8], offset_delta: i32) -> Vec<u8> {
-    let mut out = Vec::with_capacity(traf.len());
-    for b in boxes(traf) {
-        if matches!(&b.kind, b"senc" | b"saiz" | b"saio") || is_crypto_group(b.kind, b.payload) {
-            continue;
-        }
-        if b.is(b"trun") {
-            let info = parse_trun(b.payload);
-            let payload = match info.data_offset {
-                Some(off) => rebuild_trun(b.payload, off + offset_delta),
-                None => b.payload.to_vec(),
-            };
-            mk_into(&mut out, b"trun", &payload);
-        } else {
-            mk_into(&mut out, &b.kind, b.payload);
-        }
-    }
-    out
-}
-
 /// Comprueba la firma del códec en un sample ya descifrado.
 ///
 /// Una sesión FairPlay muerta **no da error**: devuelve ruido. Sin esta
@@ -240,7 +191,6 @@ pub fn validate_sample(data: &[u8], codec: &str) -> bool {
 /// a leer el archivo.
 #[derive(Debug)]
 pub struct Fragment {
-    pub moof: Vec<u8>,
     pub mdat: Vec<u8>,
     pub sample_sizes: Vec<u32>,
     pub sample_durations: Vec<u32>,
@@ -258,7 +208,6 @@ pub fn decrypt_fragment(
     let Some(traf) = boxes(moof_payload).find(|b| b.is(b"traf")).map(|b| b.payload) else {
         // Sin traf no hay nada que descifrar; pasa de largo.
         return Ok(Fragment {
-            moof: moof_raw.to_vec(),
             mdat: mdat_payload.to_vec(),
             sample_sizes: Vec::new(),
             sample_durations: Vec::new(),
@@ -289,7 +238,6 @@ pub fn decrypt_fragment(
     if sizes.is_empty() {
         tracing::warn!("fragmento sin trun utilizable: se pasa sin descifrar");
         return Ok(Fragment {
-            moof: moof_raw.to_vec(),
             mdat: mdat_payload.to_vec(),
             sample_sizes: Vec::new(),
             sample_durations: Vec::new(),
@@ -376,23 +324,12 @@ pub fn decrypt_fragment(
         buf
     };
 
-    let delta = -removed_bytes(traf);
-    let clean = clean_traf(traf, delta);
-
-    let mut moof_payload_out = Vec::with_capacity(moof_payload.len());
-    for b in boxes(moof_payload) {
-        if b.is(b"pssh") {
-            continue;
-        }
-        if b.is(b"traf") {
-            mk_into(&mut moof_payload_out, b"traf", &clean);
-        } else {
-            mk_into(&mut moof_payload_out, &b.kind, b.payload);
-        }
-    }
-
+    // Aquí NO se reconstruye un `moof` limpio: el archivo final no lleva
+    // ninguno (ver `assemble`), así que limpiar el `traf` y recolocar los
+    // `data_offset` era trabajo tirado en cada fragmento del camino caliente.
+    // Verificado: la salida sigue siendo byte a byte idéntica a la del
+    // downloader original.
     Ok(Fragment {
-        moof: super::mk(b"moof", &moof_payload_out),
         mdat: plain,
         sample_sizes: sizes,
         sample_durations: durations,
@@ -443,26 +380,6 @@ mod tests {
         assert_eq!(d.calls, vec![4, 4], "un sample por llamada");
         assert_eq!(out.mdat, vec![0xFFu8; 8]);
         assert_eq!(out.sample_sizes, vec![4, 4]);
-    }
-
-    #[test]
-    fn el_traf_pierde_el_cifrado_y_el_trun_se_recoloca() {
-        let senc = mk(b"senc", &[0u8; 4]);
-        let mut traf_payload = trun(&[4], 100);
-        traf_payload.extend_from_slice(&senc);
-        let traf = mk(b"traf", &traf_payload);
-        let moof = mk(b"moof", &traf);
-
-        let mut tenc = crate::mp4::init::TencInfo::fallback();
-        tenc.codec = "mp4a".into();
-        let mut d = Flip { calls: vec![] };
-        let out = decrypt_fragment(&moof, &[0u8; 4], &tenc, &mut d, 0).unwrap();
-
-        let traf_out = crate::mp4::find(&out.moof[8..], &[b"traf"]).unwrap();
-        assert!(boxes(traf_out).all(|b| !b.is(b"senc")), "el senc debe salir");
-        let trun_out = boxes(traf_out).find(|b| b.is(b"trun")).unwrap();
-        let info = parse_trun(trun_out.payload);
-        assert_eq!(info.data_offset, Some(100 - (senc.len() as i32)));
     }
 
     /// Regresión: el catálogo de Apple manda ALAC con `iv_size = 0` (IV

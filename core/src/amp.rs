@@ -410,6 +410,46 @@ impl Amp {
     }
 }
 
+/// Un resultado de búsqueda, ya normalizado para la UI.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchHit {
+    pub id: String,
+    /// `album`, `song`, `music-video`, `playlist` o `artist`.
+    pub kind: String,
+    pub name: String,
+    pub artist: String,
+    pub artwork: String,
+    /// Bajar esto de una pulsación puede ser una discografía entera: la UI
+    /// pregunta antes.
+    pub bulk: bool,
+}
+
+/// Aplana la respuesta de búsqueda. **Un solo sitio**: la app y la vista previa
+/// tienen que enseñar exactamente lo mismo, o probar una no dice nada de la otra.
+pub fn search_hits(v: &Value) -> Vec<SearchHit> {
+    let mut out = Vec::new();
+    for kind in ["albums", "songs", "music-videos", "playlists", "artists"] {
+        let Some(items) = v["results"][kind]["data"].as_array() else { continue };
+        for it in items {
+            let a = &it["attributes"];
+            let singular = kind.trim_end_matches('s');
+            out.push(SearchHit {
+                id: it["id"].as_str().unwrap_or_default().to_string(),
+                kind: if kind == "music-videos" { "music-video".into() } else { singular.to_string() },
+                name: a["name"].as_str().unwrap_or_default().to_string(),
+                artist: a["artistName"].as_str().unwrap_or_default().to_string(),
+                artwork: a["artwork"]["url"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .replace("{w}", "300")
+                    .replace("{h}", "300"),
+                bulk: matches!(kind, "artists" | "playlists"),
+            });
+        }
+    }
+    out
+}
+
 /// El token de música que tiene el wrapper (puerto 30020). Hace falta para el
 /// `webPlayback` de los tracks legacy y para los music videos.
 pub async fn wrapper_music_token(decrypt_port: &str) -> Option<String> {

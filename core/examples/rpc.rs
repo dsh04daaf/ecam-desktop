@@ -6,7 +6,7 @@
 //!
 //!   rpc state | rpc config | rpc search <término> | rpc download <url> <calidad>
 
-use ecam_core::{amp::Amp, collection, config::Config, wrapper::Wrapper, Quality};
+use ecam_core::{amp::Amp, cancel::Cancel, collection, config::Config, wrapper::Wrapper, Quality};
 use serde_json::json;
 use std::sync::Arc;
 
@@ -49,11 +49,20 @@ async fn main() {
             let term = args.get(1).cloned().unwrap_or_default();
             match Amp::autoconfigure(&mut cfg).await {
                 Ok(amp) => match amp.search(&term, 25).await {
-                    Ok(v) => out(hits(&v)),
+                    Ok(v) => out(serde_json::to_value(ecam_core::amp::search_hits(&v)).unwrap_or_default()),
                     Err(e) => out(json!({ "error": e.to_string() })),
                 },
                 Err(e) => out(json!({ "error": e.to_string() })),
             }
+        }
+        "url" => {
+            let kind = args.get(1).cloned().unwrap_or_default();
+            let id = args.get(2).cloned().unwrap_or_default();
+            let sf = match Amp::autoconfigure(&mut cfg).await {
+                Ok(a) => a.storefront,
+                Err(_) => cfg.storefront.clone(),
+            };
+            out(json!({ "url": collection::url_for(&sf, &kind, &id) }));
         }
         "download" => {
             let url = args.get(1).cloned().unwrap_or_default();
@@ -78,32 +87,13 @@ async fn main() {
                 use std::io::Write;
                 let _ = std::io::stdout().flush();
             });
-            match collection::download_url(&cfg, &amp, &url, quality, None, Some(on_track)).await {
+            match collection::download_url(&cfg, &amp, &url, quality, None, Some(on_track), &Cancel::new()).await {
                 Ok(r) => out(json!({ "event": "finished", "ok": true, "done": r.done.len(), "failed": r.failed.len() })),
                 Err(e) => out(json!({ "event": "finished", "ok": false, "error": e.to_string() })),
             }
         }
         other => out(json!({ "error": format!("comando desconocido: {other}") })),
     }
-}
-
-fn hits(v: &serde_json::Value) -> serde_json::Value {
-    let mut out = Vec::new();
-    for kind in ["albums", "songs", "music-videos", "playlists", "artists"] {
-        let Some(items) = v["results"][kind]["data"].as_array() else { continue };
-        for it in items {
-            let a = &it["attributes"];
-            out.push(json!({
-                "id": it["id"],
-                "kind": kind.trim_end_matches('s'),
-                "name": a["name"],
-                "artist": a["artistName"],
-                "artwork": a["artwork"]["url"].as_str().unwrap_or("")
-                    .replace("{w}", "300").replace("{h}", "300"),
-            }));
-        }
-    }
-    serde_json::Value::Array(out)
 }
 
 fn out(v: serde_json::Value) {
