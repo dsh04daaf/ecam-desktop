@@ -37,7 +37,7 @@
       if (isApp) {
         throw new Error(`El puente con el core no está disponible (comando "${cmd}"). Es un fallo de build.`);
       }
-      const r = await fetchImpl('/invoke/' + cmd, {
+      const r = await fetchImpl('invoke/' + cmd, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(args),
@@ -65,7 +65,7 @@
       polling = true;
       setInterval(async () => {
         try {
-          const r = await fetchImpl('/events');
+          const r = await fetchImpl('events');
           if (!(r.headers.get('content-type') || '').includes('application/json')) return;
           for (const ev of await r.json()) {
             // El rpc marca el tipo en `event`; en la app son canales distintos.
@@ -96,6 +96,7 @@
       getConfig: () => call('get_config'),
       setConfig: (cfg) => call('set_config', { cfg }),
       search: (term) => call('search', { term }),
+      browse: (kind, id) => call('browse', { kind, id }),
       download: (url, quality) => call('download', { url, quality }),
       // Por tipo e id: la URL la arma el core con la tienda de la cuenta.
       downloadItem: (kind, id, quality) => call('download_item', { kind, id, quality }),

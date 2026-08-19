@@ -115,6 +115,16 @@ pub fn auth_error_message(code: &str) -> &'static str {
     }
 }
 
+/// Sin esto, cada llamada a `wsl.exe` abre una consola negra encima de la app.
+/// Es la bandera CREATE_NO_WINDOW de Windows; en Linux no existe y no hace nada.
+#[cfg(windows)]
+fn no_console(cmd: &mut tokio::process::Command) {
+    use std::os::windows::process::CommandExt;
+    cmd.creation_flags(0x0800_0000);
+}
+#[cfg(not(windows))]
+fn no_console(_cmd: &mut tokio::process::Command) {}
+
 pub struct Runtime {
     pub backend: Backend,
     /// `host:puerto` del puerto de descifrado, para comprobar que responde.
@@ -161,12 +171,12 @@ impl Runtime {
             Backend::External => return Ok(false),
         };
         args.push(script.to_string());
-        let status = tokio::process::Command::new(program)
-            .args(args)
+        let mut cmd = tokio::process::Command::new(program);
+        cmd.args(args)
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .await?;
+            .stderr(std::process::Stdio::null());
+        no_console(&mut cmd);
+        let status = cmd.status().await?;
         Ok(status.success())
     }
 
@@ -256,11 +266,13 @@ impl Runtime {
         creds: Option<(&str, &str)>,
     ) -> Result<(tokio::process::Child, mpsc::Receiver<Event>)> {
         let (program, args) = self.launch_command(creds);
-        let mut child = tokio::process::Command::new(program)
-            .args(args)
+        let mut cmd = tokio::process::Command::new(program);
+        cmd.args(args)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true)
+            .kill_on_drop(true);
+        no_console(&mut cmd);
+        let mut child = cmd
             .spawn()
             .map_err(|e| Error::Other(format!("no se pudo lanzar el wrapper: {e}")))?;
 

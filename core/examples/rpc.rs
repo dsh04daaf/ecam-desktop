@@ -55,6 +55,17 @@ async fn main() {
                 Err(e) => out(json!({ "error": e.to_string() })),
             }
         }
+        "browse" => {
+            let kind = args.get(1).cloned().unwrap_or_default();
+            let id = args.get(2).cloned().unwrap_or_default();
+            match Amp::autoconfigure(&mut cfg).await {
+                Ok(amp) => match amp.browse(&kind, &id).await {
+                    Ok(b) => out(serde_json::to_value(b).unwrap_or_default()),
+                    Err(e) => out(json!({ "error": e.to_string() })),
+                },
+                Err(e) => out(json!({ "error": e.to_string() })),
+            }
+        }
         "url" => {
             let kind = args.get(1).cloned().unwrap_or_default();
             let id = args.get(2).cloned().unwrap_or_default();

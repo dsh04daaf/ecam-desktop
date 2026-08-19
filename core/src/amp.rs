@@ -450,6 +450,136 @@ pub fn search_hits(v: &Value) -> Vec<SearchHit> {
     out
 }
 
+/// Un elemento dentro de una entidad abierta (un track de un álbum, un álbum de
+/// un artista…).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrowseItem {
+    pub id: String,
+    pub kind: String,
+    pub name: String,
+    pub artist: String,
+    pub extra: String,
+    pub artwork: String,
+}
+
+/// Lo que hay dentro de una entidad, para poder navegarla en vez de solo bajarla.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Browse {
+    pub kind: String,
+    pub id: String,
+    pub name: String,
+    pub artist: String,
+    pub artwork: String,
+    pub items: Vec<BrowseItem>,
+}
+
+fn dur(ms: u64) -> String {
+    let s = ms / 1000;
+    format!("{}:{:02}", s / 60, s % 60)
+}
+
+impl Amp {
+    /// Abre una entidad y devuelve lo que contiene.
+    ///
+    /// Sin esto la app solo sabía buscar y bajar a ciegas: no se podía ver qué
+    /// trae un álbum ni qué publicó un artista.
+    pub async fn browse(&self, kind: &str, id: &str) -> Result<Browse> {
+        match kind {
+            "album" => {
+                let data = self.album(id).await?;
+                let a = &data["data"][0]["attributes"];
+                let items = data["data"][0]["relationships"]["tracks"]["data"]
+                    .as_array()
+                    .map(|arr| {
+                        arr.iter()
+                            .map(|t| {
+                                let ta = &t["attributes"];
+                                BrowseItem {
+                                    id: t["id"].as_str().unwrap_or_default().into(),
+                                    kind: "song".into(),
+                                    name: ta["name"].as_str().unwrap_or_default().into(),
+                                    artist: ta["artistName"].as_str().unwrap_or_default().into(),
+                                    extra: dur(ta["durationInMillis"].as_u64().unwrap_or(0)),
+                                    artwork: String::new(),
+                                }
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                Ok(Browse {
+                    kind: "album".into(),
+                    id: id.into(),
+                    name: a["name"].as_str().unwrap_or_default().into(),
+                    artist: a["artistName"].as_str().unwrap_or_default().into(),
+                    artwork: a["artwork"]["url"].as_str().unwrap_or_default().replace("{w}", "400").replace("{h}", "400"),
+                    items,
+                })
+            }
+            "playlist" => {
+                let (name, tracks) = self.playlist(id).await?;
+                let artwork = tracks
+                    .first()
+                    .and_then(|t| t["attributes"]["artwork"]["url"].as_str())
+                    .unwrap_or_default()
+                    .replace("{w}", "400")
+                    .replace("{h}", "400");
+                let items = tracks
+                    .iter()
+                    .map(|t| {
+                        let ta = &t["attributes"];
+                        BrowseItem {
+                            id: t["id"].as_str().unwrap_or_default().into(),
+                            kind: "song".into(),
+                            name: ta["name"].as_str().unwrap_or_default().into(),
+                            artist: ta["artistName"].as_str().unwrap_or_default().into(),
+                            extra: dur(ta["durationInMillis"].as_u64().unwrap_or(0)),
+                            artwork: String::new(),
+                        }
+                    })
+                    .collect();
+                Ok(Browse { kind: "playlist".into(), id: id.into(), name, artist: String::new(), artwork, items })
+            }
+            "artist" => {
+                // Se piden los álbumes con su metadata, no solo los ids: si no,
+                // la vista del artista sería una lista de números.
+                let data = self
+                    .get(
+                        &format!("/v1/catalog/{}/artists/{id}", self.storefront),
+                        &[("include", "albums"), ("l", &self.language)],
+                        false,
+                    )
+                    .await?;
+                let item = &data["data"][0];
+                let rel = &item["relationships"]["albums"];
+                let albums = self.paginate(rel, &[("l", &self.language)]).await?;
+                let items = albums
+                    .iter()
+                    .map(|al| {
+                        let aa = &al["attributes"];
+                        BrowseItem {
+                            id: al["id"].as_str().unwrap_or_default().into(),
+                            kind: "album".into(),
+                            name: aa["name"].as_str().unwrap_or_default().into(),
+                            artist: aa["artistName"].as_str().unwrap_or_default().into(),
+                            extra: aa["releaseDate"].as_str().unwrap_or_default().chars().take(4).collect(),
+                            artwork: aa["artwork"]["url"].as_str().unwrap_or_default().replace("{w}", "300").replace("{h}", "300"),
+                        }
+                    })
+                    .collect();
+                Ok(Browse {
+                    kind: "artist".into(),
+                    id: id.into(),
+                    name: item["attributes"]["name"].as_str().unwrap_or_default().into(),
+                    artist: String::new(),
+                    artwork: item["attributes"]["artwork"]["url"].as_str().unwrap_or_default().replace("{w}", "400").replace("{h}", "400"),
+                    items,
+                })
+            }
+            other => Err(Error::Other(format!("no se puede abrir un {other}"))),
+        }
+    }
+}
+
 /// El token de música que tiene el wrapper (puerto 30020). Hace falta para el
 /// `webPlayback` de los tracks legacy y para los music videos.
 pub async fn wrapper_music_token(decrypt_port: &str) -> Option<String> {

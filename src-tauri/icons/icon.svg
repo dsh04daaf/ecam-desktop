@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ff4d63"/>
+      <stop offset="1" stop-color="#e0102b"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#g)"/>
+  <!-- Nota doble: la silueta que se reconoce a 32 px -->
+  <path fill="#fff" d="M330 108c0-8-7-14-15-12l-134 30c-7 2-12 8-12 15v179c-12-7-27-9-42-5-30 8-49 34-43 59s35 38 65 30c26-7 44-28 44-51V181l108-24v122c-12-7-27-9-42-5-30 8-49 34-43 59s35 38 65 30c26-7 44-28 44-51z"/>
+</svg>

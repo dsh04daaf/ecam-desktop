@@ -6,7 +6,7 @@
 //! motor, y vigila el wrapper.
 
 use ecam_core::{
-    amp::{search_hits, Amp, SearchHit},
+    amp::{search_hits, Amp, Browse, SearchHit},
     cancel::Cancel,
     collection,
     config::{Config, Quality},
@@ -178,6 +178,13 @@ struct TrackDone {
     fatal: bool,
 }
 
+/// Abre una entidad (álbum, playlist, artista) para poder verla por dentro.
+#[tauri::command]
+async fn browse(state: State<'_, AppState>, kind: String, id: String) -> Result<Browse, String> {
+    let amp = amp(&state).await?;
+    amp.browse(&kind, &id).await.map_err(|e| e.to_string())
+}
+
 /// Descarga por tipo e id, sin que la UI tenga que inventarse una URL.
 ///
 /// Antes la ventana construía `music.apple.com/us/...` con la tienda clavada;
@@ -223,13 +230,25 @@ async fn download(
     let last = Arc::new(Mutex::new(std::time::Instant::now()));
     let app2 = app.clone();
     let (acc2, last2) = (acc.clone(), last.clone());
-    let progress = Arc::new(move |n: u64| {
-        let total = acc2.fetch_add(n, Ordering::Relaxed) + n;
-        let mut l = last2.lock().unwrap();
-        if l.elapsed() >= std::time::Duration::from_millis(250) {
-            *l = std::time::Instant::now();
-            let _ = app2.emit("progress", serde_json::json!({ "job": job, "bytes": total }));
-        }
+    let progress: ecam_core::track::Progress = Arc::new(move |st| {
+        use ecam_core::track::Stage;
+        let payload = match st {
+            Stage::Downloading(n) => {
+                let total = acc2.fetch_add(n, Ordering::Relaxed) + n;
+                // Solo esta fase se limita: las otras son un puñado de avisos.
+                let mut l = last2.lock().unwrap();
+                if l.elapsed() < std::time::Duration::from_millis(250) {
+                    return;
+                }
+                *l = std::time::Instant::now();
+                serde_json::json!({ "job": job, "stage": "downloading", "bytes": total })
+            }
+            Stage::Decrypting { done, total } => {
+                serde_json::json!({ "job": job, "stage": "decrypting", "done": done, "total": total })
+            }
+            Stage::Tagging => serde_json::json!({ "job": job, "stage": "tagging" }),
+        };
+        let _ = app2.emit("progress", payload);
     });
 
     let app3 = app.clone();
@@ -305,7 +324,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             wrapper_state, install_distro, start_wrapper, submit_two_factor, sign_out,
-            get_config, set_config, search, download, download_item, cancel
+            get_config, set_config, search, browse, download, download_item, cancel
         ])
         .on_window_event(|window, event| {
             // Al cerrar: matar el wrapper y apagar la distro. Si no, la VM de WSL

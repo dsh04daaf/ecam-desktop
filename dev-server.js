@@ -45,6 +45,7 @@ const commands = {
   // ignora a propósito, como el 501 del dev-server de ECBP.
   set_config: async () => ({ preview: true }),
   search: ({ term }) => rpc(['search', term]),
+  browse: ({ kind, id }) => rpc(['browse', kind, id]),
 
   async start_wrapper() { return { preview: true }; },
   async submit_two_factor() { return { preview: true }; },

@@ -36,8 +36,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let downloaded = Arc::new(AtomicU64::new(0));
     let d = downloaded.clone();
-    let progress = Arc::new(move |n: u64| {
-        d.fetch_add(n, Ordering::Relaxed);
+    let progress = Arc::new(move |st: ecam_core::track::Stage| {
+        if let ecam_core::track::Stage::Downloading(n) = st {
+            d.fetch_add(n, Ordering::Relaxed);
+        }
     });
 
     let on_track = Arc::new(|i: usize, total: usize, r: &Result<ecam_core::track::TrackOutcome, ecam_core::Error>| {

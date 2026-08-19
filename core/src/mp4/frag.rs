@@ -11,6 +11,12 @@ use crate::error::{Error, Result};
 /// cajas sin un wrapper de verdad delante.
 pub trait Decryptor {
     fn decrypt(&mut self, data: &[u8]) -> Result<Vec<u8>>;
+
+    /// Descifra varios tramos de una tanda. Por defecto uno a uno; el wrapper
+    /// de verdad los encauza, que es de donde sale la velocidad.
+    fn decrypt_batch(&mut self, ranges: &[&[u8]]) -> Result<Vec<Vec<u8>>> {
+        ranges.iter().map(|r| self.decrypt(r)).collect()
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -250,20 +256,27 @@ pub fn decrypt_fragment(
     let plain = if !has_subsamples {
         // Sin subsamples (incluye los cbc2 legacy, que ni traen senc): cada sample
         // es una cadena AES-CBC independiente, así que va en su propia llamada.
-        let mut out = Vec::with_capacity(mdat_payload.len());
+        let mut ranges: Vec<&[u8]> = Vec::with_capacity(sizes.len());
         let mut off = 0usize;
-        for (i, &sz) in sizes.iter().enumerate() {
+        for &sz in &sizes {
             let end = (off + sz as usize).min(mdat_payload.len());
-            let chunk = &mdat_payload[off.min(end)..end];
-            let dec_chunk = dec.decrypt(chunk)?;
-            if i == 0 && !validate_sample(&dec_chunk, codec) {
+            ranges.push(&mdat_payload[off.min(end)..end]);
+            off = end;
+        }
+        let decrypted = dec.decrypt_batch(&ranges)?;
+
+        if let Some(first) = decrypted.first() {
+            if !validate_sample(first, codec) {
                 return Err(Error::DecryptionCorrupted(format!(
                     "cabecera {codec} inválida en el primer sample (0x{:02x})",
-                    dec_chunk.first().copied().unwrap_or(0)
+                    first.first().copied().unwrap_or(0)
                 )));
             }
-            out.extend_from_slice(&dec_chunk);
-            off = end;
+        }
+
+        let mut out = Vec::with_capacity(mdat_payload.len());
+        for chunk in &decrypted {
+            out.extend_from_slice(chunk);
         }
         // Cola que no cubre ningún sample: se copia tal cual.
         if off < mdat_payload.len() {
@@ -282,7 +295,11 @@ pub fn decrypt_fragment(
             off += sz as usize;
         }
 
-        let mut checked = false;
+        // Primero se apunta DÓNDE está cada tramo cifrado y luego se mandan
+        // todos de una tanda: antes era una ida y vuelta al wrapper por tramo,
+        // y un track son miles.
+        let mut positions: Vec<(usize, usize)> = Vec::new();
+        let mut first_probe: Option<(usize, usize, usize)> = None; // (sample_start, pos, len)
         for (i, &sample_start) in starts.iter().enumerate() {
             let Some(enc) = senc.get(i) else { continue };
             if enc.subsamples.is_empty() {
@@ -299,27 +316,35 @@ pub fn decrypt_fragment(
                 if pos >= end {
                     break;
                 }
-                let dec_chunk = dec.decrypt(&buf[pos..end])?;
-                if !checked {
-                    checked = true;
-                    // Si el tramo cifrado empieza en el byte 0 del sample, la
-                    // firma del códec sale del descifrado; si hay prefijo en
-                    // claro, la firma está en ese prefijo y ya es legible.
-                    let probe: &[u8] = if pos == sample_start {
-                        &dec_chunk
-                    } else {
-                        &buf[sample_start..end.min(buf.len())]
-                    };
-                    if !validate_sample(probe, codec) {
-                        return Err(Error::DecryptionCorrupted(format!(
-                            "falta la firma de {codec} (0x{})",
-                            hex::encode(&probe[..probe.len().min(2)])
-                        )));
-                    }
+                if first_probe.is_none() {
+                    first_probe = Some((sample_start, pos, end - pos));
                 }
-                buf[pos..end].copy_from_slice(&dec_chunk[..end - pos]);
+                positions.push((pos, end - pos));
                 pos = end;
             }
+        }
+
+        let decrypted = {
+            let ranges: Vec<&[u8]> = positions.iter().map(|&(p, n)| &buf[p..p + n]).collect();
+            dec.decrypt_batch(&ranges)?
+        };
+
+        // La comprobación de sesión muerta se hace sobre el primer tramo, igual
+        // que antes: si el tramo cifrado empieza en el byte 0 del sample, la
+        // firma del códec sale del descifrado; si hay prefijo en claro, la
+        // firma ya está legible en ese prefijo.
+        if let (Some((sample_start, pos, _)), Some(first)) = (first_probe, decrypted.first()) {
+            let probe: &[u8] = if pos == sample_start { first } else { &buf[sample_start..] };
+            if !validate_sample(probe, codec) {
+                return Err(Error::DecryptionCorrupted(format!(
+                    "falta la firma de {codec} (0x{})",
+                    hex::encode(&probe[..probe.len().min(2)])
+                )));
+            }
+        }
+
+        for (&(p, n), chunk) in positions.iter().zip(decrypted.iter()) {
+            buf[p..p + n].copy_from_slice(&chunk[..n]);
         }
         buf
     };

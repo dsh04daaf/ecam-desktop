@@ -88,6 +88,7 @@ function addRow(text, ok = true, live = false) {
   li.className = live ? 'live' : ok ? 'ok' : 'bad';
   const span = document.createElement('span');
   span.textContent = text;
+  span.title = text;   // el texto completo, aunque la fila lo recorte
   li.appendChild(span);
   $('downloads').prepend(li);
   return li;
@@ -129,7 +130,15 @@ async function run(li, promise) {
 const fmtMB = (n) => `${(n / 1048576).toFixed(1)} MB`;
 
 ecam.listen('progress', (p) => {
-  setText(rows.get(p.job), `Bajando… ${fmtMB(p.bytes)}`);
+  const li = rows.get(p.job);
+  if (!li) return;
+  if (p.stage === 'downloading') return setText(li, `Bajando… ${fmtMB(p.bytes)}`);
+  if (p.stage === 'decrypting') {
+    // Descifrar no baja bytes: sin este aviso la pantalla parecía colgada.
+    const pct = p.total ? Math.round((p.done / p.total) * 100) : 0;
+    return setText(li, `Descifrando… ${pct}%`);
+  }
+  if (p.stage === 'tagging') return setText(li, 'Etiquetando…');
 });
 
 ecam.listen('track', (t) => {
@@ -154,6 +163,66 @@ async function startDownload(url) {
   const li = addRow('Bajando…', true, true);
   await run(li, ecam.download(url, $('quality').value));
 }
+
+// ── navegación ─────────────────────────────────────────────────────────────
+const detail = $('detail');
+let current = null;   // entidad abierta
+
+function showGrid() {
+  detail.classList.add('hidden');
+  $('results').classList.remove('hidden');
+  current = null;
+}
+
+async function openEntity(kind, id) {
+  $('results').classList.add('hidden');
+  detail.classList.remove('hidden');
+  $('d-items').innerHTML = '<li class="hint">Cargando…</li>';
+  try {
+    current = await ecam.browse(kind, id);
+  } catch (e) {
+    $('d-items').innerHTML = `<li class="bad">${e}</li>`;
+    return;
+  }
+  $('d-art').src = current.artwork || '';
+  $('d-kind').textContent = current.kind;
+  $('d-name').textContent = current.name;
+  $('d-artist').textContent = current.artist || '';
+  $('d-count').textContent = `${current.items.length} ${current.kind === 'artist' ? 'álbumes' : 'pistas'}`;
+  $('d-items').innerHTML = '';
+
+  current.items.forEach((it, i) => {
+    const li = document.createElement('li');
+    li.style.animationDelay = `${Math.min(i * 12, 300)}ms`;
+    li.innerHTML = `<span class="n">${i + 1}</span>
+      <span class="t"><strong>${it.name}</strong><em>${it.artist}</em></span>
+      <span class="x">${it.extra || ''}</span>`;
+    const btn = document.createElement('button');
+    btn.className = 'ghost tiny';
+    // Dentro de un artista cada fila es un álbum: se abre. Dentro de un álbum
+    // o una playlist cada fila es una pista: se baja.
+    btn.textContent = it.kind === 'album' ? 'Abrir' : 'Bajar';
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      if (it.kind === 'album') return openEntity('album', it.id);
+      const row = addRow(`Bajando ${it.name}…`, true, true);
+      await run(row, ecam.downloadItem('song', it.id, $('quality').value));
+    });
+    li.appendChild(btn);
+    if (it.kind === 'album') li.addEventListener('click', () => openEntity('album', it.id));
+    $('d-items').appendChild(li);
+  });
+}
+
+$('back').addEventListener('click', showGrid);
+
+$('d-all').addEventListener('click', async () => {
+  if (!current) return;
+  if (current.items.length > 30 &&
+      !confirm(`Son ${current.items.length} elementos. ¿Bajar todo?`)) return;
+  const li = addRow(`Bajando ${current.name}…`, true, true);
+  await run(li, ecam.downloadItem(current.kind, current.id, $('quality').value));
+});
 
 // ── formularios ────────────────────────────────────────────────────────────
 $('form-login').addEventListener('submit', async (e) => {
@@ -186,6 +255,7 @@ $('q').addEventListener('keydown', async (e) => {
     return startDownload(text);
   }
   // Esqueletos mientras llega la respuesta: la pantalla no se queda muerta.
+  showGrid();
   $('results').innerHTML = Array.from({ length: 12 }, () => '<div class="skeleton"></div>').join('');
   let hits;
   try {
@@ -203,9 +273,9 @@ $('q').addEventListener('keydown', async (e) => {
     card.innerHTML = `<div class="art"><img src="${h.artwork}" alt="" loading="lazy" /></div>
       <div class="meta"><strong>${h.name}</strong><span>${h.artist}</span><em>${h.kind}</em></div>`;
     card.addEventListener('click', async () => {
-      // Un artista son TODOS sus álbumes: eso no se dispara de una pulsación
-      // sin avisar. (Antes, además, no había forma de pararlo.)
-      if (h.bulk && !confirm(`«${h.name}» puede ser una descarga muy larga (${h.kind}). ¿Seguir?`)) return;
+      // Álbum, artista y playlist se ABREN para poder ver qué traen y elegir.
+      // Solo lo que ya es una pista suelta se baja de una pulsación.
+      if (['album', 'artist', 'playlist'].includes(h.kind)) return openEntity(h.kind, h.id);
       const li = addRow(`Bajando ${h.name}…`, true, true);
       await run(li, ecam.downloadItem(h.kind, h.id, $('quality').value));
     });
@@ -214,28 +284,94 @@ $('q').addEventListener('keydown', async (e) => {
 });
 
 // ── ajustes ────────────────────────────────────────────────────────────────
+/// Etiquetas y grupos. Lo que no esté aquí se pinta igual con su nombre crudo:
+/// así un ajuste nuevo del core nunca queda invisible en la ventana.
+const CFG_LABELS = {
+  'storefront': ['Cuenta', 'Tienda', 'auto = la de tu cuenta'],
+  'language': ['Cuenta', 'Idioma de la metadata'],
+  'media-user-token': ['Cuenta', 'Token de usuario', 'se toma solo del motor; solo tócalo si sabes lo que haces'],
+  'decrypt-port': ['Cuenta', 'Puerto del motor'],
+  'alac-max': ['Calidad', 'ALAC máximo (Hz)', '192000 · 96000 · 48000 · 44100'],
+  'atmos-max': ['Calidad', 'Atmos máximo (kbps)', '2768 · 2448'],
+  'aac-type': ['Calidad', 'Tipo de AAC', 'aac · aac-binaural · aac-downmix'],
+  'mv-max': ['Calidad', 'Vídeo máximo (altura)', '2160 · 1080 · 720'],
+  'mv-audio-type': ['Calidad', 'Audio del vídeo', 'atmos · ac3 · aac'],
+  'output-dir': ['Carpetas', 'Carpeta de salida'],
+  'album-folder-format': ['Carpetas', 'Carpeta de álbum', '{AlbumName} {ArtistName} {ReleaseYear} {UPC} {RecordLabel} {Quality} {Tag}'],
+  'playlist-folder-format': ['Carpetas', 'Carpeta de playlist', '{PlaylistName} {PlaylistId}'],
+  'artist-folder-format': ['Carpetas', 'Carpeta de artista', 'vacío = sin carpeta de artista'],
+  'song-file-format': ['Carpetas', 'Nombre de archivo', '{SongNumer} {SongName} {DiscNumber} {TrackNumber} {Quality} {Tag}'],
+  'explicit-choice': ['Carpetas', 'Etiqueta de explícito'],
+  'clean-choice': ['Carpetas', 'Etiqueta de limpio'],
+  'cover-size': ['Extras', 'Tamaño de carátula embebida'],
+  'save-cover': ['Extras', 'Guardar carátula aparte'],
+  'save-lrc': ['Extras', 'Guardar letras (.lrc)'],
+  'embed-lrc': ['Extras', 'Letras dentro del archivo'],
+  'save-animated-artwork': ['Extras', 'Artwork animado', 'usa el ffmpeg que trae la app'],
+  'ffmpeg-path': ['Avanzado', 'Ruta de ffmpeg', 'vacío o "ffmpeg" = el que viene con la app'],
+  'widevine-device-key': ['Avanzado', 'Llave de dispositivo (vídeos)', 'PEM; si está vacío se busca en la carpeta de config'],
+  'widevine-client-id': ['Avanzado', 'ClientId (vídeos)'],
+};
+
+let cfgCache = null;
+
+function renderSettings(cfg) {
+  const box = $('cfg-form');
+  box.innerHTML = '';
+  const groups = {};
+  for (const key of Object.keys(cfg)) {
+    const [group, label, help] = CFG_LABELS[key] || ['Avanzado', key];
+    (groups[group] = groups[group] || []).push({ key, label, help });
+  }
+  for (const group of ['Cuenta', 'Calidad', 'Carpetas', 'Extras', 'Avanzado']) {
+    if (!groups[group]) continue;
+    const h = document.createElement('h3');
+    h.textContent = group;
+    box.appendChild(h);
+    for (const { key, label, help } of groups[group]) {
+      const value = cfg[key];
+      const lab = document.createElement('label');
+      if (typeof value === 'boolean') {
+        lab.className = 'check';
+        lab.innerHTML = `<input type="checkbox" data-key="${key}" ${value ? 'checked' : ''} /> <span>${label}</span>`;
+      } else {
+        lab.innerHTML = `<span>${label}</span>
+          <input data-key="${key}" value="${value ?? ''}" ${typeof value === 'number' ? 'inputmode="numeric"' : ''} />
+          ${help ? `<em class="help">${help}</em>` : ''}`;
+      }
+      box.appendChild(lab);
+    }
+  }
+}
+
 $('btn-settings').addEventListener('click', async () => {
-  const cfg = await ecam.getConfig();
-  $('cfg-out').value = cfg['output-dir'] ?? cfg.output_dir ?? '';
-  $('cfg-store').value = cfg.storefront ?? '';
-  $('cfg-lang').value = cfg.language ?? '';
-  $('cfg-lrc').checked = !!(cfg['save-lrc'] ?? cfg.save_lrc);
-  $('cfg-cover').checked = !!(cfg['save-cover'] ?? cfg.save_cover);
-  $('cfg-anim').checked = !!(cfg['save-animated-artwork'] ?? cfg.save_animated_artwork);
-  $('settings').showModal();
+  try {
+    cfgCache = await ecam.getConfig();
+    renderSettings(cfgCache);
+    $('settings').showModal();
+  } catch (e) {
+    addRow(String(e), false);
+  }
 });
 
 $('cfg-save').addEventListener('click', async (e) => {
   e.preventDefault();
-  const cfg = await ecam.getConfig();
-  cfg['output-dir'] = $('cfg-out').value;
-  cfg.storefront = $('cfg-store').value || 'auto';
-  cfg.language = $('cfg-lang').value;
-  cfg['save-lrc'] = $('cfg-lrc').checked;
-  cfg['save-cover'] = $('cfg-cover').checked;
-  cfg['save-animated-artwork'] = $('cfg-anim').checked;
-  await ecam.setConfig(cfg);
-  $('settings').close();
+  const cfg = { ...cfgCache };
+  for (const input of $('cfg-form').querySelectorAll('[data-key]')) {
+    const key = input.dataset.key;
+    const before = cfgCache[key];
+    if (input.type === 'checkbox') cfg[key] = input.checked;
+    // Un número tiene que volver como número: mandarlo como texto rompe el
+    // config al leerlo.
+    else if (typeof before === 'number') cfg[key] = Number(input.value) || 0;
+    else cfg[key] = input.value;
+  }
+  try {
+    await ecam.setConfig(cfg);
+    $('settings').close();
+  } catch (err) {
+    addRow(String(err), false);
+  }
 });
 
 $('cfg-signout').addEventListener('click', async (e) => {

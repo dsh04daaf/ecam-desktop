@@ -58,7 +58,26 @@
     </header>
 
     <main>
-      <div id="results" class="grid"></div>
+      <div id="view">
+        <!-- Cabecera de la entidad abierta (álbum, artista, playlist) -->
+        <div id="detail" class="detail hidden">
+          <button id="back" class="ghost tiny">← Volver</button>
+          <div class="dhead">
+            <img id="d-art" alt="" />
+            <div>
+              <em id="d-kind"></em>
+              <h2 id="d-name"></h2>
+              <span id="d-artist"></span>
+              <div class="drow">
+                <button id="d-all" class="primary">Descargar todo</button>
+                <span id="d-count" class="hint"></span>
+              </div>
+            </div>
+          </div>
+          <ul id="d-items" class="items"></ul>
+        </div>
+        <div id="results" class="grid"></div>
+      </div>
       <aside id="panel">
         <h2>Descargas</h2>
         <ul id="downloads"></ul>
@@ -68,12 +87,9 @@
 
     <dialog id="settings">
       <h2>Ajustes</h2>
-      <label>Carpeta de salida <input id="cfg-out" /></label>
-      <label>Tienda <input id="cfg-store" placeholder="auto" /></label>
-      <label>Idioma <input id="cfg-lang" /></label>
-      <label class="check"><input id="cfg-lrc" type="checkbox" /> Guardar letras (.lrc)</label>
-      <label class="check"><input id="cfg-cover" type="checkbox" /> Guardar carátula</label>
-      <label class="check"><input id="cfg-anim" type="checkbox" /> Artwork animado (necesita ffmpeg)</label>
+      <!-- El formulario se pinta desde el config que devuelve el core: si se
+           añade un ajuste allí, aparece aquí sin tocar el HTML. -->
+      <div id="cfg-form"></div>
       <div class="row">
         <button id="cfg-signout" class="ghost">Cerrar sesión</button>
         <button id="cfg-save" class="primary">Guardar</button>

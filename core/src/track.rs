@@ -16,8 +16,23 @@ use std::io::{BufReader, BufWriter, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-/// Se llama con los bytes que se acaban de bajar (no acumulados).
-pub type Progress = Arc<dyn Fn(u64) + Send + Sync>;
+/// En qué va la descarga de un track.
+///
+/// Antes solo se informaba de bytes bajados, así que en cuanto empezaba el
+/// descifrado la pantalla se quedaba congelada en la última cifra y parecía
+/// colgada — que es justo lo que pasa: descifrar un track son miles de idas y
+/// vueltas al wrapper y no baja ni un byte más.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case", tag = "stage", content = "value")]
+pub enum Stage {
+    /// Bytes recién bajados (no acumulados).
+    Downloading(u64),
+    /// Fragmentos descifrados de un total.
+    Decrypting { done: usize, total: usize },
+    Tagging,
+}
+
+pub type Progress = Arc<dyn Fn(Stage) + Send + Sync>;
 
 #[derive(Debug, Clone)]
 pub struct TrackOutcome {
@@ -123,7 +138,11 @@ pub async fn download_track(
     };
 
     // ── 2. Bajar los segmentos a un temporal ───────────────────────────────
-    let enc_file = tempfile::NamedTempFile::new_in(&job.output_dir)?;
+    // Los temporales van a una carpeta propia, NO a la del usuario: ver un
+    // montón de .tmp junto a la música (y que sobrevivan a un cierre a lo
+    // bruto) es feo y confunde.
+    let tmp_dir = scratch_dir(&job.output_dir)?;
+    let enc_file = tempfile::NamedTempFile::new_in(&tmp_dir)?;
     {
         let mut w = BufWriter::new(enc_file.as_file());
         // El HLS de Apple llega de dos formas: un solo archivo repetido en todos
@@ -146,7 +165,7 @@ pub async fn download_track(
                 cancel.check()?;
                 w.write_all(&chunk)?;
                 if let Some(p) = &progress {
-                    p(chunk.len() as u64);
+                    p(Stage::Downloading(chunk.len() as u64));
                 }
             }
         }
@@ -160,11 +179,17 @@ pub async fn download_track(
     let decrypt_port = cfg.decrypt_port.clone();
     let adam_id = job.adam_id.clone();
     let out_path_c = out_path.clone();
-    let dir = job.output_dir.clone();
+    let progress_c = progress.clone();
+    let total_segments = segments.len();
+    let dir = tmp_dir.clone();
+    let final_dir = job.output_dir.clone();
 
     tokio::task::spawn_blocking(move || -> Result<()> {
         let mut wrapper = Wrapper::connect(&decrypt_port)?;
-        decrypt_to_file(enc_file.path(), &out_path_c, &dir, &mut wrapper, &adam_id, &key_uris)
+        decrypt_to_file(
+            enc_file.path(), &out_path_c, &dir, &final_dir, &mut wrapper, &adam_id, &key_uris,
+            total_segments, progress_c,
+        )
     })
     .await
     .map_err(|e| Error::Other(format!("la tarea de descifrado se cayó: {e}")))??;
@@ -192,6 +217,9 @@ pub async fn download_track(
         tokio::fs::write(&lrc_path, text).await.ok();
     }
 
+    if let Some(p) = &progress {
+        p(Stage::Tagging);
+    }
     crate::tags::write(
         &out_path,
         t,
@@ -220,16 +248,28 @@ pub async fn download_track(
 /// Se hace en dos ficheros temporales y un `rename` al final: si algo falla a
 /// medias, en la carpeta del usuario no queda un .m4a roto que luego parezca
 /// descargado (y que el `skip` de la próxima vez daría por bueno).
+/// Carpeta de trabajo: al lado de la de salida pero oculta, y en el mismo
+/// sistema de archivos para que el `rename` final no tenga que copiar.
+fn scratch_dir(output_dir: &Path) -> Result<PathBuf> {
+    let dir = output_dir.join(".ecam-tmp");
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+
+#[allow(clippy::too_many_arguments)]
 fn decrypt_to_file(
     enc_path: &Path,
     out_path: &Path,
-    dir: &Path,
+    tmp_dir: &Path,
+    final_dir: &Path,
     wrapper: &mut Wrapper,
     adam_id: &str,
     key_uris: &[Option<String>],
+    total_fragments: usize,
+    progress: Option<Progress>,
 ) -> Result<()> {
     let mut enc = BufReader::new(std::fs::File::open(enc_path)?);
-    let mut raw = tempfile::tempfile_in(dir)?;
+    let mut raw = tempfile::tempfile_in(tmp_dir)?;
     let mut tables = SampleTables::default();
 
     let mut clean_init: Vec<u8> = Vec::new();
@@ -271,6 +311,9 @@ fn decrypt_to_file(
                     raw_w.write_all(&fragment.mdat)?;
                     tables.push_fragment(&fragment.sample_sizes, &fragment.sample_durations);
                     seg_idx += 1;
+                    if let Some(p) = &progress {
+                        p(Stage::Decrypting { done: seg_idx, total: total_fragments.max(seg_idx) });
+                    }
                 }
                 // sidx, free, skip… no aportan nada al archivo final.
                 _ => {}
@@ -287,7 +330,9 @@ fn decrypt_to_file(
     }
 
     raw.seek(std::io::SeekFrom::Start(0))?;
-    let tmp_out = tempfile::NamedTempFile::new_in(dir)?;
+    // El archivo a medio montar se crea en la carpeta FINAL para que el
+    // `persist` sea un rename atómico y no una copia entre discos.
+    let tmp_out = tempfile::NamedTempFile::new_in(final_dir)?;
     {
         let mut w = BufWriter::new(tmp_out.as_file());
         let mut reader = BufReader::new(&mut raw);

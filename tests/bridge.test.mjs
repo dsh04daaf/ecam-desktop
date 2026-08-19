@@ -51,7 +51,9 @@ test('en el navegador se cae a HTTP y se parsea el JSON', async () => {
     fetchImpl: async (u) => { url = u; return jsonRes([{ id: '1' }]); },
   });
   assert.deepEqual(await call('search', { term: 'x' }), [{ id: '1' }]);
-  assert.equal(url, '/invoke/search');
+  // Relativa a propósito: con barra inicial, servida bajo un subcamino,
+  // la petición se va a la raíz del dominio (y a otra app).
+  assert.equal(url, 'invoke/search');
 });
 
 test('un error del core llega con su motivo, no como HTTP 500 pelado', async () => {
