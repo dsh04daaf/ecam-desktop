@@ -24,14 +24,18 @@ pub enum Target {
 
 pub fn parse_url(url: &str) -> Option<Target> {
     static RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"music\.apple\.com/([a-zA-Z]{2})/(album|song|playlist|artist|room|music-video)/[^/]*/?([a-zA-Z0-9._-]+)")
-            .unwrap()
+        // El trozo del nombre es OPCIONAL: las rooms llegan como
+        // `/room/6786407674`, sin slug, y con el patrón anterior no casaban.
+        Regex::new(
+            r"music\.apple\.com/([a-zA-Z]{2})/(album|song|playlist|artist|room|music-video)/(?:([^/?#]+)/)?([a-zA-Z0-9._-]+)",
+        )
+        .unwrap()
     });
     static SONG_PARAM: Lazy<Regex> = Lazy::new(|| Regex::new(r"[?&]i=(\d+)").unwrap());
 
     let c = RE.captures(url)?;
     let storefront = c[1].to_lowercase();
-    let id = c[3].to_string();
+    let id = c[4].to_string();
     let only_song = SONG_PARAM.captures(url).map(|m| m[1].to_string());
 
     Some(match &c[2] {
@@ -76,6 +80,17 @@ pub struct Ctx<'a> {
 }
 
 impl Ctx<'_> {
+    /// Carpeta raíz de esta descarga. Con `separate-quality-folders` cada
+    /// calidad va a la suya, que es lo que evita que bajar el mismo track en
+    /// otra calidad se salte por "ya estaba".
+    pub fn root(&self, base: &Path) -> std::path::PathBuf {
+        if self.cfg.separate_quality_folders {
+            base.join(self.quality.display())
+        } else {
+            base.to_path_buf()
+        }
+    }
+
     fn notify(&self, i: usize, total: usize, r: &std::result::Result<TrackOutcome, Error>) {
         if let Some(cb) = &self.on_track {
             cb(i, total, r);
@@ -258,7 +273,7 @@ pub async fn download_album(
     }
 
     let artist = folder_artist(&album_attrs, &tracks);
-    let mut dir = base_dir.to_path_buf();
+    let mut dir = ctx.root(base_dir);
     if let Some(af) = crate::naming::artist_folder(cfg, "", &artist) {
         dir = dir.join(af);
     }
@@ -310,8 +325,8 @@ pub async fn download_album(
 pub async fn download_playlist(ctx: &Ctx<'_>, playlist_id: &str) -> Result<Report> {
     let (cfg, amp, quality) = (ctx.cfg, ctx.amp, ctx.quality);
     let (name, tracks) = amp.playlist(playlist_id).await?;
-    let dir = cfg
-        .output_dir
+    let dir = ctx
+        .root(&cfg.output_dir)
         .join(crate::naming::playlist_folder(cfg, playlist_id, &name, quality));
     tokio::fs::create_dir_all(&dir).await?;
 
@@ -412,6 +427,15 @@ pub async fn download_room(ctx: &Ctx<'_>, room_id: &str) -> Result<Report> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn una_room_sin_slug_tambien_se_reconoce() {
+        // Las rooms llegan así de la app de Apple, sin el trozo del nombre.
+        assert_eq!(
+            parse_url("https://music.apple.com/nz/room/6786407674"),
+            Some(Target::Room { storefront: "nz".into(), id: "6786407674".into() })
+        );
+    }
 
     #[test]
     fn reconoce_las_urls_de_apple_music() {

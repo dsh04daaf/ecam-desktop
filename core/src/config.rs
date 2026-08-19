@@ -60,6 +60,12 @@ pub struct Config {
     pub save_animated_artwork: bool,
     pub save_lrc: bool,
     pub embed_lrc: bool,
+    /// Cada calidad en su propia carpeta (ALAC/, Atmos/, AAC/…).
+    ///
+    /// Sin esto, bajar un track en ALAC y luego en AAC produce el MISMO nombre
+    /// de archivo, así que el segundo se salta con un "ya estaba" y nunca
+    /// aparece. El bot lo resuelve igual, con una carpeta por códec.
+    pub separate_quality_folders: bool,
 
     pub album_folder_format: String,
     pub playlist_folder_format: String,
@@ -102,6 +108,7 @@ impl Default for Config {
             save_animated_artwork: false,
             save_lrc: true,
             embed_lrc: true,
+            separate_quality_folders: true,
             album_folder_format: "{AlbumName}".into(),
             playlist_folder_format: "{PlaylistName}".into(),
             artist_folder_format: "{UrlArtistName}".into(),

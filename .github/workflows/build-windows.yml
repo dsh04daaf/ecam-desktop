@@ -50,6 +50,11 @@ jobs:
       - name: Probar los idiomas
         run: node --test tests/i18n.test.mjs
 
+      # Un display en `dialog` a secas deja la ventana de ajustes pintada para
+      # siempre. Ya pasó una vez.
+      - name: Probar las guardas de CSS
+        run: node --test tests/style.test.mjs
+
       - name: Comprobar que no se cuela ninguna credencial en el binario
         shell: pwsh
         run: |

@@ -102,6 +102,7 @@
       downloadItem: (kind, id, quality) => call('download_item', { kind, id, quality }),
       cancel: (job) => call('cancel', { job }),
       preview: (url) => call('preview', { url }),
+      downloadArtwork: (kind, id, animated) => call('download_artwork', { kind, id, animated }),
       historyList: () => call('history_list'),
       historyClear: () => call('history_clear'),
       historyRemove: (id) => call('history_remove', { id }),

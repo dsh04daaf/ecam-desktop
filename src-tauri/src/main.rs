@@ -283,6 +283,25 @@ async fn restart_wrapper(app: tauri::AppHandle) -> Result<bool, String> {
     Ok(relaunch_and_wait(&app).await)
 }
 
+/// Baja solo la carátula (y la animada si se pide), sin el audio.
+#[tauri::command]
+async fn download_artwork(
+    state: State<'_, AppState>,
+    kind: String,
+    id: String,
+    animated: bool,
+) -> Result<u64, String> {
+    let amp = amp(&state).await?;
+    let cfg = state.cfg.lock().unwrap().clone();
+    let saved = ecam_core::artwork::download_artwork_only(&cfg, &amp, &kind, &id, animated)
+        .await
+        .map_err(|e| e.to_string())?;
+    if saved.is_empty() {
+        return Err("no había carátula que bajar".into());
+    }
+    Ok(saved.len() as u64)
+}
+
 /// Lo que el wrapper ha ido diciendo, para la pestaña del motor.
 #[tauri::command]
 fn wrapper_logs(state: State<'_, AppState>) -> Vec<String> {
@@ -500,7 +519,7 @@ fn main() {
             get_config, set_config, search, browse, download, download_item, cancel,
             import_widevine, widevine_ready,
             history_list, history_clear, history_remove, open_folder, restart_wrapper,
-            wrapper_logs, preview
+            wrapper_logs, preview, download_artwork
         ])
         .on_window_event(|window, event| {
             // Al cerrar: matar el wrapper y apagar la distro. Si no, la VM de WSL

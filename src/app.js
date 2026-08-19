@@ -365,11 +365,21 @@ function renderCard(p) {
     </div>
     ${calidades ? `<h3>${t('qualities_here')}</h3><ul class="quals">${calidades}</ul>` : ''}
     ${p.warnings.length ? `<ul class="warns">${p.warnings.map((w) => `<li>${w.detail}</li>`).join('')}</ul>` : ''}
-    ${p.artwork_hq ? `<p><a href="${p.artwork_hq}" target="_blank" rel="noreferrer">${t('hq_artwork')}</a></p>` : ''}
+    ${p.artwork_hq ? `<p><a href="#" id="hq-link">${t('hq_artwork')}</a></p>` : ''}
     ${p.alternatives.length ? `<h3>${t('other_versions')}</h3><ul class="alts">${
       p.alternatives.map((a) => `<li data-id="${a.id}"><img src="${a.artwork}" alt=""/><span>${a.name}<em>${a.year}</em></span></li>`).join('')
     }</ul>` : ''}
     <div class="crow"></div>`;
+
+  // Un <a target="_blank"> no abre nada dentro de la app: el navegador lo abre
+  // el sistema, y eso hay que pedirlo explícitamente.
+  const hq = box.querySelector('#hq-link');
+  if (hq) {
+    hq.addEventListener('click', (e) => {
+      e.preventDefault();
+      ecam.openFolder(p.artwork_hq).catch((err) => addRow(String(err), false));
+    });
+  }
 
   const row = box.querySelector('.crow');
   if (p.availability !== 'unavailable') {
@@ -383,6 +393,40 @@ function renderCard(p) {
       await run(li, ecam.downloadItem(p.kind, p.id, sel.value));
     });
     row.appendChild(btn);
+  }
+  if (p.artwork_hq) {
+    const art = document.createElement('button');
+    art.className = 'ghost';
+    art.textContent = t('get_artwork');
+    art.addEventListener('click', async () => {
+      const li = addRow(`${t('downloading')} ${t('get_artwork')}`, true, true);
+      try {
+        const n = await ecam.downloadArtwork(p.kind, p.id, false);
+        li.className = 'ok';
+        setText(li, `✓ ${t('get_artwork')} (${n})`);
+      } catch (err) {
+        li.className = 'bad';
+        setText(li, String(err));
+      }
+    });
+    row.appendChild(art);
+  }
+  if (p.has_animated_artwork) {
+    const anim = document.createElement('button');
+    anim.className = 'ghost';
+    anim.textContent = t('get_animated');
+    anim.addEventListener('click', async () => {
+      const li = addRow(`${t('downloading')} ${t('get_animated')}`, true, true);
+      try {
+        const n = await ecam.downloadArtwork(p.kind, p.id, true);
+        li.className = 'ok';
+        setText(li, `✓ ${t('get_animated')} (${n})`);
+      } catch (err) {
+        li.className = 'bad';
+        setText(li, String(err));
+      }
+    });
+    row.appendChild(anim);
   }
   if (['album', 'playlist', 'artist'].includes(p.kind)) {
     const open = document.createElement('button');
@@ -468,6 +512,7 @@ const CFG = {
   'save-cover':            ['Extras', 'Guardar carátula aparte', 'cover.jpg junto a la música, al tamaño que publique Apple'],
   'save-lrc':              ['Extras', 'Guardar letras (.lrc)', 'Necesita token de usuario'],
   'embed-lrc':             ['Extras', 'Letras dentro del archivo', 'Además del .lrc'],
+  'separate-quality-folders': ['Carpetas', 'Una carpeta por calidad', 'ALAC/, Atmos/, AAC/… Sin esto, el mismo track en otra calidad choca de nombre y se salta con "ya estaba"'],
   'save-animated-artwork': ['Extras', 'Artwork animado', 'Usa el ffmpeg que trae la app. Solo algunos álbumes lo tienen'],
   'ffmpeg-path':           ['Avanzado', 'Ruta de ffmpeg', 'Vacío o "ffmpeg" = el que viene con la app'],
   'widevine-device-key':   ['Avanzado', 'Llave de dispositivo (vídeos)', 'Vacío = se busca en la carpeta de config'],

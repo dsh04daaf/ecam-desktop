@@ -148,6 +148,43 @@ pub async fn download_animated(
     saved
 }
 
+/// Baja solo la carátula (y la animada, si se pide) de un álbum, pista o vídeo.
+///
+/// Es lo que ofrece la card del bot: a veces solo se quiere el arte, y bajar el
+/// álbum entero para eso no tiene sentido.
+pub async fn download_artwork_only(
+    cfg: &Config,
+    amp: &crate::amp::Amp,
+    kind: &str,
+    id: &str,
+    animated: bool,
+) -> crate::error::Result<Vec<PathBuf>> {
+    let data = match kind {
+        "album" => amp.album(id).await?,
+        "music-video" => amp.music_video(id).await?,
+        _ => amp.song(id).await?,
+    };
+    let attrs = data["data"][0]["attributes"].clone();
+    let name = attrs["name"].as_str().unwrap_or("artwork");
+    let artist = attrs["artistName"].as_str().unwrap_or("");
+
+    let dir = cfg.output_dir.join(crate::naming::sanitize(
+        &if artist.is_empty() { name.to_string() } else { format!("{artist} - {name}") },
+        150,
+    ));
+    tokio::fs::create_dir_all(&dir).await?;
+
+    let mut saved = Vec::new();
+    if let Some(p) = save_cover(&attrs["artwork"], &dir).await? {
+        saved.push(p);
+    }
+    if animated {
+        let stem = crate::naming::sanitize(name, 120);
+        saved.extend(download_animated(cfg, &attrs, &dir, &stem).await);
+    }
+    Ok(saved)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

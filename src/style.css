@@ -158,7 +158,10 @@ dialog .row{display:flex;justify-content:space-between;gap:.5rem;margin-top:1.1r
 .items li.bad{color:var(--bad)}
 
 /* ── ajustes: ahora son muchos, así que agrupados y con scroll ──────────── */
-dialog{max-height:86vh;display:flex;flex-direction:column}
+/* OJO: `display` en `dialog` a secas pisa el `display:none` que el navegador le
+   pone cuando está cerrado — la ventana se queda pintada para siempre aunque el
+   código la cierre. Solo se le da display cuando tiene el atributo [open]. */
+dialog[open]{max-height:86vh;display:flex;flex-direction:column}
 #cfg-form{overflow-y:auto;padding-right:.4rem;flex:1}
 #cfg-form h3{
   margin:1.1rem 0 .6rem;font-size:.7rem;text-transform:uppercase;letter-spacing:.1em;
