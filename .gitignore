@@ -1,3 +1,9 @@
 /target
 **/*.rs.bk
 *.tar.gz
+
+# Las credenciales del dispositivo NUNCA se commitean: se dejan en
+# src-tauri/resources/widevine/ solo en la máquina que empaqueta.
+src-tauri/resources/widevine/*.pem
+src-tauri/resources/widevine/*.bin
+src-tauri/target

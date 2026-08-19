@@ -1,0 +1,10 @@
+Recursos que se empaquetan junto al ejecutable.
+
+widevine/  Credenciales del dispositivo para los music videos:
+             device.pem      llave RSA del dispositivo (PEM)
+             client_id.bin   blob del ClientId
+
+No van dentro del binario a propósito: una credencial empotrada se saca con
+`strings` y no se puede reemplazar sin recompilar. El core las busca en
+`resources/widevine/` junto al .exe y, si no están, en el directorio de config
+del usuario. Sin ellas el resto de la app funciona: solo se caen los videos.

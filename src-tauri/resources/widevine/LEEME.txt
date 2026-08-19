@@ -1,0 +1,2 @@
+Deja aquí `device.pem` y `client_id.bin` antes de empaquetar.
+Están fuera del repositorio a propósito (ver .gitignore).
