@@ -24,6 +24,14 @@ function startCountdown() {
 }
 
 async function refresh() {
+  // `?screen=login|2fa|install` fuerza una pantalla. Solo sirve para revisarlas
+  // en la vista previa: con sesión activa no se pasa por ellas nunca.
+  const forced = new URLSearchParams(location.search).get('screen');
+  if (forced && screens.includes(forced)) {
+    show(forced);
+    if (forced === '2fa') startCountdown();
+    return;
+  }
   const state = await ecam.wrapperState();
   show(ecam.screenFor(state));
   if (state.account?.storefront_id) {
