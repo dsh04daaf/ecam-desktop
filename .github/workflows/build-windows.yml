@@ -60,10 +60,49 @@ jobs:
           Copy-Item (Get-ChildItem -Recurse fftmp -Filter ffmpeg.exe | Select-Object -First 1).FullName src-tauri/resources/ffmpeg.exe
           if (-not (Test-Path src-tauri/resources/ffmpeg.exe)) { Write-Error "ffmpeg no quedó en resources"; exit 1 }
 
-      - name: Compilar el instalador
-        run: cargo build --release --manifest-path src-tauri/Cargo.toml
+      # El bug raíz de ECBP fue un flag de configuración ausente. Se comprueba.
+      - name: Verificar withGlobalTauri
+        shell: bash
+        run: |
+          node -e "
+            const c = require('./src-tauri/tauri.conf.json');
+            if (c.app.withGlobalTauri !== true) {
+              console.error('withGlobalTauri no está activo: window.__TAURI__ no se inyectará y la app no hablará con su core');
+              process.exit(1);
+            }
+            console.log('withGlobalTauri OK');
+          "
+
+      # Binario preconstruido en vez de `cargo install`: compilar el CLI desde
+      # fuentes son ~400 crates y varios minutos en cada build.
+      - name: Instalar Tauri CLI
+        uses: taiki-e/install-action@v2
+        with:
+          tool: tauri-cli
+
+      # OJO: `cargo build --release` compila el .exe pero NO empaqueta nada.
+      # El instalador lo produce el CLI de Tauri.
+      - name: Compilar la app y el instalador
+        working-directory: src-tauri
+        run: cargo tauri build
+
+      - name: Recoger artefactos
+        shell: bash
+        run: |
+          mkdir -p dist
+          find src-tauri/target/release/bundle -name "*.exe" -exec cp {} dist/ \;
+          cp src-tauri/target/release/ecam-desktop.exe dist/ECAM-portable.exe 2>/dev/null || true
+          ls -la dist
+          test -n "$(ls -A dist)" || { echo "no se generó ningún ejecutable"; exit 1; }
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ecam-windows
-          path: src-tauri/target/release/bundle/nsis/*.exe
+          name: ECAM-windows
+          path: dist/*
+          retention-days: 7
+
+      - name: Publicar en el Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
