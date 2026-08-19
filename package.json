@@ -1,0 +1,9 @@
+{
+  "name": "ecam-desktop-dev",
+  "private": true,
+  "scripts": {
+    "preview": "node dev-server.js",
+    "test": "node --test tests/"
+  },
+  "dependencies": { "express": "^4.21.2" }
+}

@@ -51,3 +51,20 @@ Esa es la prueba que hay que repetir cuando se toque el camino de descifrado.
   entero en RAM (4 GB con un mix de una hora); aquí todo va en streaming.
 - **Ninguna credencial dentro del binario**: la llave de dispositivo de Widevine
   y el resto se leen de disco. El token de usuario se le pide al wrapper.
+
+## Vista previa de la UI (sin compilar Tauri)
+
+Tauri necesita el toolchain de Windows, así que la interfaz se prueba en el
+navegador con el mismo `src/app.js` que corre en la app — igual que se hizo con
+ECBP Desktop antes de publicarlo:
+
+```bash
+cargo build --example rpc      # el puente con el core
+npm install && npm run preview # http://127.0.0.1:3026
+```
+
+`dev-server.js` emula los comandos de Tauri llamando al core **de verdad**
+(`core/examples/rpc.rs`), así que lo que se ve es lo que hace la app. En la VPS
+usa el wrapper que ya tiene sesión iniciada: no hay login que pasar para probar
+el resto. Lo que toca disco de la máquina (instalar la distro, cerrar sesión)
+responde con un error a propósito.

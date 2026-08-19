@@ -1,35 +1,107 @@
-// Puente con el core. Está aparte a propósito: así se puede probar con
-// `node --test` sin navegador ni Tauri, que es lo que salvó a ECBP de publicar
-// una versión que no hablaba con su propio motor.
+/* Puente entre la UI y el core.
+ *
+ * Vive aparte de app.js y sin tocar el DOM para poder probarlo en Node
+ * simulando cada entorno (ver `tests/bridge.test.mjs`).
+ *
+ * El diseño viene de una cicatriz de ECBP Desktop: su v0.1.0 salió rota porque
+ * el puente, al no encontrar `window.__TAURI__`, caía a HTTP; el protocolo de
+ * assets de Tauri respondía el index.html con 200 y el código tomaba ESO por
+ * datos. Cero peticiones llegaron al core y varias pantallas fallaron en
+ * silencio. De ahí las tres defensas de aquí abajo:
+ *   1. buscar también `__TAURI_INTERNALS__`, que Tauri v2 inyecta siempre;
+ *   2. saber si estamos DENTRO de la app aunque el puente esté roto, para
+ *      gritar en vez de fingir que somos un navegador;
+ *   3. exigir content-type JSON: un servidor de assets contesta HTML a lo que
+ *      no conoce, y eso es un error, no un dato.
+ */
 (function (global) {
-  function api() {
-    // withGlobalTauri = true en tauri.conf.json. Si esto falta, la app se ve
-    // pero no hace nada: es exactamente el fallo que costó la v0.1.0 de ECBP.
-    const t = global.__TAURI__;
-    if (!t || !t.core || typeof t.core.invoke !== 'function') {
-      throw new Error('el puente con el core no está disponible (¿withGlobalTauri?)');
-    }
-    return t;
+  function findInvoke(win) {
+    if (!win) return null;
+    const g = win.__TAURI__ && win.__TAURI__.core && win.__TAURI__.core.invoke;
+    if (typeof g === 'function') return g.bind(win.__TAURI__.core);
+    const i = win.__TAURI_INTERNALS__ && win.__TAURI_INTERNALS__.invoke;
+    if (typeof i === 'function') return (cmd, args) => i(cmd, args);
+    return null;
   }
 
-  const bridge = {
-    invoke: (cmd, args) => api().core.invoke(cmd, args || {}),
-    listen: (event, handler) => api().event.listen(event, (e) => handler(e.payload)),
+  function inApp(win) {
+    if (!win) return false;
+    if (win.__TAURI__ || win.__TAURI_INTERNALS__) return true;
+    const origin = (win.location && win.location.origin) || '';
+    return /tauri\.localhost/.test(origin);
+  }
 
-    wrapperState: () => bridge.invoke('wrapper_state'),
-    installDistro: (tarball) => bridge.invoke('install_distro', { tarball }),
-    startWrapper: (user, password) => bridge.invoke('start_wrapper', { user, password }),
-    submitTwoFactor: (code) => bridge.invoke('submit_two_factor', { code }),
-    signOut: () => bridge.invoke('sign_out'),
-    getConfig: () => bridge.invoke('get_config'),
-    setConfig: (cfg) => bridge.invoke('set_config', { cfg }),
-    search: (term) => bridge.invoke('search', { term }),
-    download: (url, quality) => bridge.invoke('download', { url, quality }),
-    cancel: (job) => bridge.invoke('cancel', { job }),
+  function makeCall({ invoke, isApp, fetchImpl }) {
+    return async function call(cmd, args = {}) {
+      if (invoke) return invoke(cmd, args);
+      if (isApp) {
+        throw new Error(`El puente con el core no está disponible (comando "${cmd}"). Es un fallo de build.`);
+      }
+      const r = await fetchImpl('/invoke/' + cmd, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(args),
+      });
+      const ct = (r.headers && r.headers.get('content-type')) || '';
+      if (!ct.includes('application/json')) {
+        throw new Error(`"${cmd}" no devolvió JSON (HTTP ${r.status}) — el core no está disponible`);
+      }
+      const d = await r.json();
+      if (!r.ok) throw new Error(d && d.error ? d.error : 'HTTP ' + r.status);
+      return d;
+    };
+  }
+
+  /// En la app los sucesos son eventos de Tauri; en la vista previa se sondean.
+  function makeListen({ win, isApp, fetchImpl }) {
+    const handlers = {};
+    if (isApp && win.__TAURI__ && win.__TAURI__.event) {
+      return (name, fn) => win.__TAURI__.event.listen(name, (e) => fn(e.payload));
+    }
+    let polling = false;
+    return (name, fn) => {
+      (handlers[name] = handlers[name] || []).push(fn);
+      if (polling) return;
+      polling = true;
+      setInterval(async () => {
+        try {
+          const r = await fetchImpl('/events');
+          if (!(r.headers.get('content-type') || '').includes('application/json')) return;
+          for (const ev of await r.json()) {
+            // El rpc marca el tipo en `event`; en la app son canales distintos.
+            const channel = ev.event === 'track' ? 'track'
+                          : ev.event === 'finished' ? 'finished' : null;
+            (handlers[channel] || []).forEach((h) => h(ev));
+          }
+        } catch { /* la vista previa puede estar apagada: no es fatal */ }
+      }, 700);
+    };
+  }
+
+  const win = global.window || global;
+  const isApp = inApp(win);
+  const fetchImpl = (...a) => global.fetch(...a);
+  const call = makeCall({ invoke: findInvoke(win), isApp, fetchImpl });
+
+  const bridge = {
+    findInvoke, inApp, makeCall, makeListen,
+    isApp,
+    invoke: call,
+    listen: makeListen({ win, isApp, fetchImpl }),
+
+    wrapperState: () => call('wrapper_state'),
+    installDistro: (tarball) => call('install_distro', { tarball }),
+    startWrapper: (user, password) => call('start_wrapper', { user, password }),
+    submitTwoFactor: (code) => call('submit_two_factor', { code }),
+    signOut: () => call('sign_out'),
+    getConfig: () => call('get_config'),
+    setConfig: (cfg) => call('set_config', { cfg }),
+    search: (term) => call('search', { term }),
+    download: (url, quality) => call('download', { url, quality }),
+    cancel: (job) => call('cancel', { job }),
   };
 
-  /// Qué pantalla toca según lo que diga el core. Es una función pura para
-  /// poder probarla sin abrir la app.
+  /// Qué pantalla toca. Función pura para poder probarla sin abrir la app.
   bridge.screenFor = function (state) {
     if (!state.distro_installed) return 'install';
     if (!state.has_session) return 'login';

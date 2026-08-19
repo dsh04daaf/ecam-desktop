@@ -1,35 +1,77 @@
 // Prueba del puente UI↔core sin navegador ni Tauri.
-// Existe por la lección de ECBP: se publicó una versión que se veía preciosa y
-// no hablaba con su propio motor. Esto lo caza en el CI antes de empaquetar.
+//
+// Existe por la cicatriz de ECBP: se publicó una versión que se veía bien y no
+// hablaba con su propio motor, porque el puente tomaba el index.html que
+// devolvía el protocolo de assets por datos buenos. Esta prueba lo caza.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 globalThis.window = globalThis;
+globalThis.fetch = async () => { throw new Error('sin red en la prueba'); };
 const bridge = require('../src/bridge.js');
 
-test('sin el puente global, el error es explícito y no un undefined', () => {
-  delete globalThis.__TAURI__;
-  assert.throws(() => bridge.invoke('lo_que_sea'), /withGlobalTauri/);
+const jsonRes = (body, ok = true, status = 200) => ({
+  ok, status,
+  headers: { get: () => 'application/json' },
+  json: async () => body,
+});
+const htmlRes = () => ({
+  ok: true, status: 200,
+  headers: { get: () => 'text/html; charset=utf-8' },
+  json: async () => ({ pareceDatos: true }),
 });
 
-test('cada comando de la UI llega al core con su nombre y sus argumentos', async () => {
+test('dentro de la app se usa invoke y no HTTP', async () => {
   const calls = [];
-  globalThis.__TAURI__ = {
-    core: { invoke: (cmd, args) => { calls.push([cmd, args]); return Promise.resolve('ok'); } },
-    event: { listen: () => {} },
-  };
+  const call = bridge.makeCall({
+    invoke: (cmd, args) => { calls.push([cmd, args]); return Promise.resolve('ok'); },
+    isApp: true,
+    fetchImpl: () => { throw new Error('no debería salir por HTTP'); },
+  });
+  assert.equal(await call('search', { term: 'x' }), 'ok');
+  assert.deepEqual(calls[0], ['search', { term: 'x' }]);
+});
 
-  await bridge.startWrapper('a@b.com', 'clave');
-  await bridge.submitTwoFactor('123456');
-  await bridge.download('https://music.apple.com/nz/album/x/1', 'alac');
-  await bridge.search('garrix');
+test('dentro de la app SIN invoke se grita: es un fallo de build, no un navegador', async () => {
+  const call = bridge.makeCall({ invoke: null, isApp: true, fetchImpl: () => htmlRes() });
+  await assert.rejects(() => call('search'), /fallo de build/);
+});
 
-  assert.deepEqual(calls[0], ['start_wrapper', { user: 'a@b.com', password: 'clave' }]);
-  assert.deepEqual(calls[1], ['submit_two_factor', { code: '123456' }]);
-  assert.deepEqual(calls[2], ['download', { url: 'https://music.apple.com/nz/album/x/1', quality: 'alac' }]);
-  assert.deepEqual(calls[3], ['search', { term: 'garrix' }]);
+test('el HTML del servidor de assets NUNCA se toma por datos', async () => {
+  const call = bridge.makeCall({ invoke: null, isApp: false, fetchImpl: async () => htmlRes() });
+  await assert.rejects(() => call('search'), /no devolvió JSON/);
+});
+
+test('en el navegador se cae a HTTP y se parsea el JSON', async () => {
+  let url = '';
+  const call = bridge.makeCall({
+    invoke: null, isApp: false,
+    fetchImpl: async (u) => { url = u; return jsonRes([{ id: '1' }]); },
+  });
+  assert.deepEqual(await call('search', { term: 'x' }), [{ id: '1' }]);
+  assert.equal(url, '/invoke/search');
+});
+
+test('un error del core llega con su motivo, no como HTTP 500 pelado', async () => {
+  const call = bridge.makeCall({
+    invoke: null, isApp: false,
+    fetchImpl: async () => jsonRes({ error: 'el wrapper no responde' }, false, 500),
+  });
+  await assert.rejects(() => call('x'), /el wrapper no responde/);
+});
+
+test('se encuentra invoke por las dos vías que expone Tauri v2', () => {
+  assert.ok(bridge.findInvoke({ __TAURI__: { core: { invoke: () => {} } } }));
+  assert.ok(bridge.findInvoke({ __TAURI_INTERNALS__: { invoke: () => {} } }));
+  assert.equal(bridge.findInvoke({}), null);
+});
+
+test('se detecta estar dentro de la app aunque el puente esté roto', () => {
+  assert.ok(bridge.inApp({ __TAURI_INTERNALS__: {} }));
+  assert.ok(bridge.inApp({ location: { origin: 'http://tauri.localhost' } }));
+  assert.ok(!bridge.inApp({ location: { origin: 'http://127.0.0.1:3026' } }));
 });
 
 test('la pantalla se elige según lo que diga el core', () => {

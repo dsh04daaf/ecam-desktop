@@ -75,10 +75,10 @@ ecam.listen('wrapper', (ev) => {
 // ── descargas ──────────────────────────────────────────────────────────────
 const rows = new Map();
 
-function addRow(text, ok = true) {
+function addRow(text, ok = true, live = false) {
   const li = document.createElement('li');
   li.textContent = text;
-  li.className = ok ? '' : 'bad';
+  li.className = live ? 'live' : ok ? 'ok' : 'bad';
   $('downloads').prepend(li);
   return li;
 }
@@ -94,7 +94,7 @@ ecam.listen('finished', (f) => {
 });
 
 async function startDownload(url) {
-  const li = addRow(`Bajando ${url}…`);
+  const li = addRow(`Bajando ${url}…`, true, true);
   const job = await ecam.download(url, $('quality').value);
   rows.set(job, li);
 }
@@ -129,12 +129,22 @@ $('q').addEventListener('keydown', async (e) => {
     $('q').value = '';
     return startDownload(text);
   }
-  const hits = await ecam.search(text);
+  // Esqueletos mientras llega la respuesta: la pantalla no se queda muerta.
+  $('results').innerHTML = Array.from({ length: 12 }, () => '<div class="skeleton"></div>').join('');
+  let hits;
+  try {
+    hits = await ecam.search(text);
+  } catch (err) {
+    $('results').innerHTML = `<p class="empty">${err}</p>`;
+    return;
+  }
   $('results').innerHTML = '';
-  hits.forEach((h) => {
+  if (!hits.length) { $('results').innerHTML = '<p class="empty">Sin resultados</p>'; return; }
+  hits.forEach((h, i) => {
     const card = document.createElement('article');
     card.className = 'card';
-    card.innerHTML = `<img src="${h.artwork}" alt="" loading="lazy" />
+    card.style.animationDelay = `${Math.min(i * 22, 400)}ms`;
+    card.innerHTML = `<div class="art"><img src="${h.artwork}" alt="" loading="lazy" /></div>
       <div class="meta"><strong>${h.name}</strong><span>${h.artist}</span><em>${h.kind}</em></div>`;
     card.addEventListener('click', () => {
       const kind = h.kind === 'music-video' ? 'music-video' : h.kind;
