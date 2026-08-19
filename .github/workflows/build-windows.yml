@@ -80,6 +80,22 @@ jobs:
         with:
           tool: tauri-cli
 
+      # Credenciales de Widevine (music videos). Se toman de los secretos si
+      # están, y si no el instalador sale sin ellas: la app las puede importar
+      # después desde Ajustes. Nunca van dentro del binario.
+      - name: Empaquetar credenciales de Widevine
+        if: env.WIDEVINE_DEVICE_KEY != ''
+        env:
+          WIDEVINE_DEVICE_KEY: ${{ secrets.WIDEVINE_DEVICE_KEY }}
+          WIDEVINE_CLIENT_ID: ${{ secrets.WIDEVINE_CLIENT_ID }}
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path src-tauri/resources/widevine | Out-Null
+          [IO.File]::WriteAllBytes("src-tauri/resources/widevine/device.pem",
+            [Convert]::FromBase64String($env:WIDEVINE_DEVICE_KEY))
+          [IO.File]::WriteAllBytes("src-tauri/resources/widevine/client_id.bin",
+            [Convert]::FromBase64String($env:WIDEVINE_CLIENT_ID))
+
       # OJO: `cargo build --release` compila el .exe pero NO empaqueta nada.
       # El instalador lo produce el CLI de Tauri.
       - name: Compilar la app y el instalador

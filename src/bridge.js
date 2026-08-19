@@ -101,6 +101,8 @@
       // Por tipo e id: la URL la arma el core con la tienda de la cuenta.
       downloadItem: (kind, id, quality) => call('download_item', { kind, id, quality }),
       cancel: (job) => call('cancel', { job }),
+      importWidevine: (deviceKey, clientId) =>
+        call('import_widevine', { deviceKey, clientId }),
       loadWidevine: (paths) => call('load_widevine', { paths }),
       widevineReady: () => call('widevine_ready'),
     };

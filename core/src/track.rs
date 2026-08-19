@@ -208,6 +208,7 @@ pub async fn download_track(
 
     let secs_decrypt = t_decrypt.elapsed().as_secs_f32();
 
+
     // ── 4. Carátula, letras y etiquetas ────────────────────────────────────
     let cover = match job.cover {
         Some(c) => Some(c),

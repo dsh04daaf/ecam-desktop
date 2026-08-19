@@ -396,6 +396,24 @@ $('cfg-save').addEventListener('click', async (e) => {
   }
 });
 
+$('cfg-widevine').addEventListener('click', async (e) => {
+  e.preventDefault();
+  const pick = (name, exts) => window.__TAURI__.dialog.open({
+    title: name, filters: [{ name, extensions: exts }],
+  });
+  try {
+    const key = await pick('device.pem', ['pem']);
+    if (!key) return;
+    const id = await pick('client_id.bin', ['bin']);
+    if (!id) return;
+    const dir = await ecam.importWidevine(key, id);
+    addRow(`Credenciales de vídeo instaladas en ${dir}`);
+    $('settings').close();
+  } catch (err) {
+    addRow(String(err), false);
+  }
+});
+
 $('cfg-signout').addEventListener('click', async (e) => {
   e.preventDefault();
   await ecam.signOut();

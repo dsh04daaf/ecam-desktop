@@ -193,6 +193,26 @@ fn widevine_ready() -> bool {
     ecam_core::mv::widevine::credentials_present()
 }
 
+/// Importa las credenciales de Widevine (los music videos no van sin ellas).
+///
+/// Se copian a la carpeta de config del usuario, que es donde el core las busca
+/// solo. Así se hace una vez y nunca más, en vez de tener que dejar archivos a
+/// mano en el sitio exacto.
+#[tauri::command]
+async fn import_widevine(device_key: String, client_id: String) -> Result<String, String> {
+    let dir = Config::config_dir().join("widevine");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+
+    for (origen, destino) in [(&device_key, "device.pem"), (&client_id, "client_id.bin")] {
+        let src = std::path::Path::new(origen);
+        if !src.exists() {
+            return Err(format!("no existe {}", src.display()));
+        }
+        std::fs::copy(src, dir.join(destino)).map_err(|e| e.to_string())?;
+    }
+    Ok(dir.display().to_string())
+}
+
 /// Abre una entidad (álbum, playlist, artista) para poder verla por dentro.
 #[tauri::command]
 async fn browse(state: State<'_, AppState>, kind: String, id: String) -> Result<Browse, String> {
@@ -349,6 +369,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             wrapper_state, install_distro, start_wrapper, submit_two_factor, sign_out,
             get_config, set_config, search, browse, download, download_item, cancel,
+            import_widevine,
             load_widevine, widevine_ready
         ])
         .on_window_event(|window, event| {
