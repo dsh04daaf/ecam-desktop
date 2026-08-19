@@ -1,0 +1,33 @@
+[package]
+name = "ecam-desktop"
+version = "0.1.0"
+edition = "2021"
+description = "ECAM Desktop — Apple Music para Windows"
+default-run = "ecam-desktop"
+
+# Crate aparte del workspace del core: compilar Tauri exige las librerías de la
+# plataforma destino, y eso lo hace el runner de Windows en CI.
+[workspace]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+ecam-core  = { path = "../core" }
+tauri      = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-clipboard-manager = "2"
+tauri-plugin-single-instance = "2"
+serde      = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio      = { version = "1", features = ["sync", "rt-multi-thread", "process"] }
+
+[features]
+custom-protocol = ["tauri/custom-protocol"]
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true

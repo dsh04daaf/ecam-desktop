@@ -18,6 +18,7 @@ pub mod lyrics;
 pub mod mp4;
 pub mod mv;
 pub mod naming;
+pub mod runtime;
 pub mod tags;
 pub mod track;
 pub mod wrapper;

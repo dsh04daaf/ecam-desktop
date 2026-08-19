@@ -1,0 +1,70 @@
+:root {
+  --bg: #0d0d10;
+  --panel: #16161b;
+  --line: #26262e;
+  --text: #ececf1;
+  --dim: #9a9aa6;
+  --accent: #fa2d48; /* el rojo de Apple Music */
+  --bad: #ff6b6b;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--text);
+  font: 14px/1.5 -apple-system, "Segoe UI", system-ui, sans-serif;
+  height: 100vh; overflow: hidden;
+}
+.hidden { display: none !important; }
+.screen { height: 100vh; display: flex; flex-direction: column; }
+.center { align-items: center; justify-content: center; text-align: center; gap: .75rem; padding: 2rem; }
+h1 { font-size: 1.5rem; margin: 0; }
+.lead { color: var(--dim); max-width: 42ch; margin: 0; }
+.hint { color: var(--dim); font-size: .85rem; }
+.error { color: var(--bad); min-height: 1.2em; }
+
+form { display: flex; flex-direction: column; gap: .5rem; width: min(320px, 90vw); }
+input, select {
+  background: var(--panel); border: 1px solid var(--line); color: var(--text);
+  border-radius: 8px; padding: .6rem .75rem; font: inherit;
+}
+input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+#code { text-align: center; letter-spacing: .5em; font-size: 1.4rem; }
+
+button { border: 0; border-radius: 8px; padding: .6rem 1rem; font: inherit; cursor: pointer; }
+.primary { background: var(--accent); color: #fff; font-weight: 600; }
+.ghost { background: transparent; color: var(--dim); border: 1px solid var(--line); }
+button:hover { filter: brightness(1.1); }
+
+header {
+  display: flex; gap: .5rem; align-items: center;
+  padding: .75rem 1rem; border-bottom: 1px solid var(--line);
+}
+.brand { font-weight: 700; letter-spacing: .04em; color: var(--accent); }
+header #q { flex: 1; }
+
+main { flex: 1; display: grid; grid-template-columns: 1fr 320px; min-height: 0; }
+.grid {
+  padding: 1rem; overflow-y: auto;
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 1rem;
+  align-content: start;
+}
+.card { cursor: pointer; }
+.card img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 10px; background: var(--panel); }
+.card:hover img { outline: 2px solid var(--accent); }
+.meta { display: flex; flex-direction: column; margin-top: .4rem; }
+.meta strong { font-size: .9rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.meta span, .meta em { color: var(--dim); font-size: .8rem; font-style: normal; }
+
+#panel { border-left: 1px solid var(--line); padding: 1rem; overflow-y: auto; background: var(--panel); }
+#panel h2 { font-size: .8rem; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); margin: 0 0 .5rem; }
+#downloads { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .35rem; }
+#downloads li { font-size: .85rem; padding: .4rem .5rem; border-radius: 6px; background: #1d1d24; }
+#downloads li.bad { color: var(--bad); }
+
+dialog {
+  background: var(--panel); color: var(--text); border: 1px solid var(--line);
+  border-radius: 12px; padding: 1.25rem; width: min(420px, 92vw);
+}
+dialog::backdrop { background: #000a; }
+dialog label { display: flex; flex-direction: column; gap: .25rem; margin-bottom: .75rem; font-size: .85rem; color: var(--dim); }
+dialog label.check { flex-direction: row; align-items: center; gap: .5rem; }
+dialog .row { display: flex; justify-content: space-between; gap: .5rem; margin-top: 1rem; }

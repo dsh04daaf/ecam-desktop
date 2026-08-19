@@ -372,6 +372,22 @@ impl Amp {
         Ok((title, items))
     }
 
+    /// Búsqueda en el catálogo. `types` fija el orden en que Apple los devuelve.
+    pub async fn search(&self, term: &str, limit: u32) -> Result<Value> {
+        let limit = limit.clamp(1, 25).to_string();
+        self.get(
+            &format!("/v1/catalog/{}/search", self.storefront),
+            &[
+                ("term", term),
+                ("types", "albums,songs,music-videos,playlists,artists"),
+                ("limit", &limit),
+                ("l", &self.language),
+            ],
+            false,
+        )
+        .await
+    }
+
     /// Letras. Se intenta primero línea a línea y luego sílaba a sílaba, que es
     /// el orden en el que Apple las publica.
     pub async fn lyrics_ttml(&self, song_id: &str) -> Result<Option<String>> {

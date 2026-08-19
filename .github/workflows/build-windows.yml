@@ -1,0 +1,51 @@
+name: build-windows
+
+# Compila el instalador de ECAM Desktop para Windows.
+#
+# El binario NO lleva credenciales dentro (ni la llave de dispositivo de
+# Widevine ni ninguna otra): se empaquetan como recurso al lado del ejecutable,
+# donde se pueden reemplazar sin recompilar.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            src-tauri
+
+      # El motor se prueba en el runner igual que en la VPS. Si el camino de
+      # descifrado se rompe, el build falla antes de empaquetar nada.
+      - name: Probar el core
+        run: cargo test -p ecam-core --manifest-path Cargo.toml
+
+      # Regresión del puente UI↔core: no necesita navegador, no hay excusa.
+      - name: Probar el puente de la UI
+        run: node --test tests/bridge.test.mjs
+
+      - name: Comprobar que no se cuela ninguna credencial en el binario
+        shell: pwsh
+        run: |
+          $hits = Select-String -Path src-tauri/src/*.rs, core/src/**/*.rs `
+            -Pattern 'BEGIN (RSA )?PRIVATE KEY' -SimpleMatch -ErrorAction SilentlyContinue
+          if ($hits) { Write-Error "hay una llave privada en el código"; exit 1 }
+
+      - name: Compilar el instalador
+        run: cargo build --release --manifest-path src-tauri/Cargo.toml
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ecam-windows
+          path: src-tauri/target/release/bundle/nsis/*.exe

@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ECAM</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- Pantalla 1: falta la distro de WSL -->
+  <section id="screen-install" class="screen center hidden">
+    <h1>Primer arranque</h1>
+    <p class="lead">ECAM necesita instalar su motor de descifrado. Es una distro
+      de WSL propia (~50 MB) que no toca ninguna otra que tengas.</p>
+    <p id="install-hint" class="hint"></p>
+    <button id="btn-install" class="primary">Instalar el motor</button>
+  </section>
+
+  <!-- Pantalla 2: login -->
+  <section id="screen-login" class="screen center hidden">
+    <h1>Entra con tu Apple&nbsp;ID</h1>
+    <p class="lead">Se usa tu suscripción de Apple Music. La sesión se queda
+      guardada: esto solo se hace una vez.</p>
+    <form id="form-login">
+      <input id="login-user" type="email" placeholder="correo" autocomplete="username" required />
+      <input id="login-pass" type="password" placeholder="contraseña" autocomplete="current-password" required />
+      <button class="primary" type="submit">Entrar</button>
+    </form>
+    <p id="login-error" class="error"></p>
+  </section>
+
+  <!-- Pantalla 3: código de verificación -->
+  <section id="screen-2fa" class="screen center hidden">
+    <h1>Código de verificación</h1>
+    <p class="lead">Apple acaba de mandarlo a tus dispositivos.</p>
+    <form id="form-2fa">
+      <input id="code" inputmode="numeric" maxlength="6" placeholder="000000" autocomplete="one-time-code" />
+      <button class="primary" type="submit">Confirmar</button>
+    </form>
+    <!-- La ventana del wrapper es de 60 s exactos: se enseña para que nadie se
+         quede mirando una pantalla que ya caducó. -->
+    <p id="countdown" class="hint"></p>
+    <p id="tfa-error" class="error"></p>
+  </section>
+
+  <!-- Pantalla 4: la app -->
+  <section id="screen-main" class="screen hidden">
+    <header>
+      <div class="brand">ECAM</div>
+      <input id="q" type="search" placeholder="Busca o pega un link de Apple Music" />
+      <select id="quality" title="Calidad">
+        <option value="alac">ALAC</option>
+        <option value="atmos">Atmos</option>
+        <option value="aac">AAC</option>
+        <option value="binaural">Binaural</option>
+      </select>
+      <button id="btn-settings" class="ghost" title="Ajustes">⚙</button>
+    </header>
+
+    <main>
+      <div id="results" class="grid"></div>
+      <aside id="panel">
+        <h2>Descargas</h2>
+        <ul id="downloads"></ul>
+        <p id="account" class="hint"></p>
+      </aside>
+    </main>
+
+    <dialog id="settings">
+      <h2>Ajustes</h2>
+      <label>Carpeta de salida <input id="cfg-out" /></label>
+      <label>Tienda <input id="cfg-store" placeholder="auto" /></label>
+      <label>Idioma <input id="cfg-lang" /></label>
+      <label class="check"><input id="cfg-lrc" type="checkbox" /> Guardar letras (.lrc)</label>
+      <label class="check"><input id="cfg-cover" type="checkbox" /> Guardar carátula</label>
+      <label class="check"><input id="cfg-anim" type="checkbox" /> Artwork animado (necesita ffmpeg)</label>
+      <div class="row">
+        <button id="cfg-signout" class="ghost">Cerrar sesión</button>
+        <button id="cfg-save" class="primary">Guardar</button>
+      </div>
+    </dialog>
+  </section>
+
+  <script src="bridge.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
