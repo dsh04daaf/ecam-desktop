@@ -92,6 +92,29 @@ async fn resolve_mp4(m3u8_url: &str) -> Result<String> {
     })
 }
 
+/// Dónde está ffmpeg.
+///
+/// El instalador lo trae al lado del ejecutable (igual que ECBP): si se dejara
+/// solo el `ffmpeg` del PATH, el artwork animado fallaría en cualquier Windows
+/// donde no esté instalado, y en silencio.
+fn ffmpeg_bin(cfg: &Config) -> std::path::PathBuf {
+    let configured = cfg.ffmpeg_path.as_os_str();
+    if configured != "ffmpeg" && configured != "ffmpeg.exe" {
+        return cfg.ffmpeg_path.clone();
+    }
+    let name = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            for candidate in [dir.join("resources").join(name), dir.join(name)] {
+                if candidate.exists() {
+                    return candidate;
+                }
+            }
+        }
+    }
+    cfg.ffmpeg_path.clone()
+}
+
 /// Baja las dos variantes. Necesita ffmpeg — es lo **único** del camino de audio
 /// que lo necesita, así que si falta, se avisa y se sigue con la descarga.
 pub async fn download_animated(
@@ -105,7 +128,8 @@ pub async fn download_animated(
         let out = dir.join(format!("{basename} [{variant}].mp4"));
         match resolve_mp4(&m3u8).await {
             Ok(mp4_url) => {
-                let status = tokio::process::Command::new(&cfg.ffmpeg_path)
+                let ffmpeg = ffmpeg_bin(cfg);
+                let status = tokio::process::Command::new(&ffmpeg)
                     .args(["-y", "-i", &mp4_url, "-c", "copy", "-movflags", "+faststart"])
                     .arg(&out)
                     .stdout(std::process::Stdio::null())
@@ -115,7 +139,7 @@ pub async fn download_animated(
                 match status {
                     Ok(s) if s.success() => saved.push(out),
                     Ok(s) => tracing::warn!("ffmpeg falló con el artwork {variant}: {s}"),
-                    Err(e) => tracing::warn!("no se pudo lanzar ffmpeg ({}): {e}", cfg.ffmpeg_path.display()),
+                    Err(e) => tracing::warn!("no se pudo lanzar ffmpeg ({}): {e}", ffmpeg.display()),
                 }
             }
             Err(e) => tracing::warn!("artwork animado {variant}: {e}"),

@@ -7,3 +7,4 @@
 src-tauri/resources/widevine/*.pem
 src-tauri/resources/widevine/*.bin
 src-tauri/target
+src-tauri/resources/ffmpeg.exe

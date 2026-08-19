@@ -42,6 +42,18 @@ jobs:
             -Pattern 'BEGIN (RSA )?PRIVATE KEY' -SimpleMatch -ErrorAction SilentlyContinue
           if ($hits) { Write-Error "hay una llave privada en el código"; exit 1 }
 
+      # ffmpeg va DENTRO del instalador: solo hace falta para el artwork
+      # animado, pero pedirle al usuario que lo instale aparte significa que esa
+      # función falla en silencio en casi todas las máquinas.
+      - name: Embeber ffmpeg
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path src-tauri/resources | Out-Null
+          Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -OutFile ff.zip
+          Expand-Archive ff.zip -DestinationPath fftmp
+          Copy-Item (Get-ChildItem -Recurse fftmp -Filter ffmpeg.exe | Select-Object -First 1).FullName src-tauri/resources/ffmpeg.exe
+          if (-not (Test-Path src-tauri/resources/ffmpeg.exe)) { Write-Error "ffmpeg no quedó en resources"; exit 1 }
+
       - name: Compilar el instalador
         run: cargo build --release --manifest-path src-tauri/Cargo.toml
 
