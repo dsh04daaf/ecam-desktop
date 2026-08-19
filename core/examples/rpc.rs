@@ -45,11 +45,23 @@ async fn main() {
             }));
         }
         "config" => out(serde_json::to_value(&cfg).unwrap_or_default()),
+        "history" => out(serde_json::to_value(ecam_core::history::load()).unwrap_or_default()),
+        "wvready" => out(serde_json::to_value(ecam_core::mv::widevine::credentials_present()).unwrap_or_default()),
         "search" => {
             let term = args.get(1).cloned().unwrap_or_default();
             match Amp::autoconfigure(&mut cfg).await {
                 Ok(amp) => match amp.search(&term, 25).await {
                     Ok(v) => out(serde_json::to_value(ecam_core::amp::search_hits(&v)).unwrap_or_default()),
+                    Err(e) => out(json!({ "error": e.to_string() })),
+                },
+                Err(e) => out(json!({ "error": e.to_string() })),
+            }
+        }
+        "preview" => {
+            let url = args.get(1).cloned().unwrap_or_default();
+            match Amp::autoconfigure(&mut cfg).await {
+                Ok(amp) => match amp.preview(&url).await {
+                    Ok(p) => out(serde_json::to_value(p).unwrap_or_default()),
                     Err(e) => out(json!({ "error": e.to_string() })),
                 },
                 Err(e) => out(json!({ "error": e.to_string() })),
@@ -98,7 +110,12 @@ async fn main() {
                 use std::io::Write;
                 let _ = std::io::stdout().flush();
             });
-            match collection::download_url(&cfg, &amp, &url, quality, None, Some(on_track), &Cancel::new()).await {
+            let ctx = collection::Ctx {
+                cfg: &cfg, amp: &amp, quality,
+                progress: None, on_track: Some(on_track),
+                cancel: Cancel::new(), restart: None,
+            };
+            match collection::download_url(&ctx, &url).await {
                 Ok(r) => out(json!({ "event": "finished", "ok": true, "done": r.done.len(), "failed": r.failed.len() })),
                 Err(e) => out(json!({ "event": "finished", "ok": false, "error": e.to_string() })),
             }

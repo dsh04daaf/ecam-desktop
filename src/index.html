@@ -7,48 +7,44 @@
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <!-- Pantalla 1: falta la distro de WSL -->
+  <!-- 1. Falta la distro de WSL -->
   <section id="screen-install" class="screen center hidden">
-    <h1>Primer arranque</h1>
-    <p class="lead">ECAM necesita instalar su motor de descifrado. Es una distro
-      de WSL propia (~50 MB) que no toca ninguna otra que tengas.</p>
+    <h1 data-t="install_title"></h1>
+    <p class="lead" data-t="install_lead"></p>
     <p id="install-hint" class="hint"></p>
-    <button id="btn-install" class="primary">Instalar el motor</button>
+    <button id="btn-install" class="primary" data-t="install_go"></button>
   </section>
 
-  <!-- Pantalla 2: login -->
+  <!-- 2. Login -->
   <section id="screen-login" class="screen center hidden">
-    <h1>Entra con tu Apple&nbsp;ID</h1>
-    <p class="lead">Se usa tu suscripción de Apple Music. La sesión se queda
-      guardada: esto solo se hace una vez.</p>
+    <h1 data-t="login_title"></h1>
+    <p class="lead" data-t="login_lead"></p>
     <form id="form-login">
-      <input id="login-user" type="email" placeholder="correo" autocomplete="username" required />
-      <input id="login-pass" type="password" placeholder="contraseña" autocomplete="current-password" required />
-      <button class="primary" type="submit">Entrar</button>
+      <input id="login-user" type="email" data-t-ph="login_user" autocomplete="username" required />
+      <input id="login-pass" type="password" data-t-ph="login_pass" autocomplete="current-password" required />
+      <button class="primary" type="submit" data-t="login_go"></button>
     </form>
     <p id="login-error" class="error"></p>
   </section>
 
-  <!-- Pantalla 3: código de verificación -->
+  <!-- 3. Código de verificación -->
   <section id="screen-2fa" class="screen center hidden">
-    <h1>Código de verificación</h1>
-    <p class="lead">Apple acaba de mandarlo a tus dispositivos.</p>
+    <h1 data-t="tfa_title"></h1>
+    <p class="lead" data-t="tfa_lead"></p>
     <form id="form-2fa">
       <input id="code" inputmode="numeric" maxlength="6" placeholder="000000" autocomplete="one-time-code" />
-      <button class="primary" type="submit">Confirmar</button>
+      <button class="primary" type="submit" data-t="tfa_go"></button>
     </form>
-    <!-- La ventana del wrapper es de 60 s exactos: se enseña para que nadie se
-         quede mirando una pantalla que ya caducó. -->
     <p id="countdown" class="hint"></p>
     <p id="tfa-error" class="error"></p>
   </section>
 
-  <!-- Pantalla 4: la app -->
+  <!-- 4. La app -->
   <section id="screen-main" class="screen hidden">
     <header>
       <div class="brand">ECAM</div>
-      <input id="q" type="search" placeholder="Busca o pega un link de Apple Music" />
-      <select id="quality" title="Calidad">
+      <input id="q" type="search" data-t-ph="search_placeholder" />
+      <select id="quality" title="ALAC / Atmos / AAC / Binaural">
         <option value="alac">ALAC</option>
         <option value="atmos">Atmos</option>
         <option value="aac">AAC</option>
@@ -59,9 +55,12 @@
 
     <main>
       <div id="view">
-        <!-- Cabecera de la entidad abierta (álbum, artista, playlist) -->
+        <!-- Card de un link pegado -->
+        <div id="card" class="card-preview hidden"></div>
+
+        <!-- Entidad abierta -->
         <div id="detail" class="detail hidden">
-          <button id="back" class="ghost tiny">← Volver</button>
+          <button id="back" class="ghost tiny" data-t="back"></button>
           <div class="dhead">
             <img id="d-art" alt="" />
             <div>
@@ -69,39 +68,64 @@
               <h2 id="d-name"></h2>
               <span id="d-artist"></span>
               <div class="drow">
-                <button id="d-all" class="primary">Descargar todo</button>
+                <button id="d-all" class="primary" data-t="download_all"></button>
+                <select id="d-quality"></select>
                 <span id="d-count" class="hint"></span>
               </div>
             </div>
           </div>
           <ul id="d-items" class="items"></ul>
         </div>
+
         <div id="results" class="grid"></div>
       </div>
+
       <aside id="panel">
-        <h2>Descargas</h2>
-        <ul id="downloads"></ul>
-        <p id="account" class="hint"></p>
+        <nav class="tabs">
+          <button class="tab on" data-tab="downloads" data-t="downloads"></button>
+          <button class="tab" data-tab="history" data-t="history"></button>
+          <button class="tab" data-tab="engine" data-t="engine"></button>
+        </nav>
+
+        <div id="tab-downloads" class="tabbody">
+          <ul id="downloads"></ul>
+        </div>
+
+        <div id="tab-history" class="tabbody hidden">
+          <button id="hist-clear" class="ghost tiny" data-t="clear_history"></button>
+          <ul id="history"></ul>
+        </div>
+
+        <div id="tab-engine" class="tabbody hidden">
+          <ul id="engine-state" class="state"></ul>
+          <div class="row">
+            <button id="eng-restart" class="ghost tiny" data-t="relaunch"></button>
+            <button id="eng-signout" class="ghost tiny" data-t="sign_out"></button>
+          </div>
+          <h3 data-t="logs"></h3>
+          <pre id="engine-logs"></pre>
+        </div>
       </aside>
     </main>
 
     <dialog id="settings">
-      <h2>Ajustes</h2>
-      <!-- El formulario se pinta desde el config que devuelve el core: si se
-           añade un ajuste allí, aparece aquí sin tocar el HTML. -->
+      <div class="dtop">
+        <h2 data-t="settings"></h2>
+        <button id="cfg-close" class="ghost tiny">✕</button>
+      </div>
+      <!-- El formulario se pinta desde el config que devuelve el core -->
       <div id="cfg-form"></div>
       <div class="wv">
         <span id="wv-state" class="hint"></span>
-        <button id="wv-load" class="ghost tiny">Cargar credenciales de vídeo…</button>
+        <button id="wv-load" class="ghost tiny" data-t="import_widevine"></button>
       </div>
       <div class="row">
-        <button id="cfg-widevine" class="ghost">Importar credenciales de vídeo</button>
-        <button id="cfg-signout" class="ghost">Cerrar sesión</button>
-        <button id="cfg-save" class="primary">Guardar</button>
+        <button id="cfg-save" class="primary" data-t="save"></button>
       </div>
     </dialog>
   </section>
 
+  <script src="i18n.js"></script>
   <script src="bridge.js"></script>
   <script src="app.js"></script>
 </body>

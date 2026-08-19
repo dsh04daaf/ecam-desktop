@@ -147,6 +147,70 @@ pub fn select_media_url(
     None
 }
 
+/// Qué calidades ofrece de verdad un track, leídas de su master playlist.
+///
+/// El catálogo solo dice "lossless" o "hi-res-lossless"; el bit depth y el
+/// sample rate exactos están en los `#EXT-X-MEDIA` del m3u8. Es lo que el bot
+/// enseña en las cards: `ALAC [24B-192kHz]`, `AAC [256kbps]`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TrackQuality {
+    /// La mejor combinación disponible.
+    pub alac: Option<String>,
+    /// Todas las combinaciones (un mismo track puede traer varias).
+    pub alac_set: Vec<String>,
+    pub atmos: bool,
+    pub aac: Option<String>,
+    pub binaural: bool,
+}
+
+fn khz(sample_rate: u32) -> String {
+    let v = sample_rate as f64 / 1000.0;
+    let s = format!("{v:.1}");
+    s.trim_end_matches('0').trim_end_matches('.').to_string()
+}
+
+/// Lee las calidades reales de un master playlist.
+pub fn parse_qualities(master: &str) -> TrackQuality {
+    let mut combos: Vec<(u32, u32)> = Vec::new(); // (bit depth, sample rate)
+    let mut q = TrackQuality::default();
+    let mut aac_kbps: Vec<u32> = Vec::new();
+
+    for line in master.lines() {
+        if !line.contains("EXT-X-MEDIA") {
+            continue;
+        }
+        let a = attrs(line);
+        let Some(gid) = attr(&a, "GROUP-ID") else { continue };
+
+        if let (Some(sr), Some(bd)) = (attr(&a, "SAMPLE-RATE"), attr(&a, "BIT-DEPTH")) {
+            if let (Ok(sr), Ok(bd)) = (sr.parse::<u32>(), bd.parse::<u32>()) {
+                combos.push((bd, sr));
+            }
+        }
+        if gid.contains("atmos") {
+            q.atmos = true;
+        }
+        if gid.contains("binaural") {
+            q.binaural = true;
+        }
+        if let Some(kbps) = gid.strip_prefix("audio-stereo-").and_then(|k| k.parse::<u32>().ok()) {
+            aac_kbps.push(kbps);
+        }
+    }
+
+    if !combos.is_empty() {
+        combos.sort_unstable();
+        combos.dedup();
+        q.alac_set = combos.iter().map(|(bd, sr)| format!("ALAC [{bd}B-{}kHz]", khz(*sr))).collect();
+        let best = combos.last().copied().unwrap_or((16, 44100));
+        q.alac = Some(format!("ALAC [{}B-{}kHz]", best.0, khz(best.1)));
+    }
+    if let Some(best) = aac_kbps.into_iter().max() {
+        q.aac = Some(format!("AAC [{best}kbps]"));
+    }
+    q
+}
+
 #[derive(Debug, Clone)]
 pub struct Segment {
     pub url: String,
@@ -243,6 +307,32 @@ binaural/prog.m3u8
         let mut c = cfg();
         c.alac_max = 1; // ninguna variante cabe
         assert!(select_media_url(MASTER, "https://x/y/master.m3u8", Quality::Alac, &c).is_none());
+    }
+
+    #[test]
+    fn lee_bit_depth_y_sample_rate_reales_del_m3u8() {
+        let master = r#"#EXTM3U
+#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio-alac-stereo-192000-24",SAMPLE-RATE=192000,BIT-DEPTH=24
+#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio-alac-stereo-44100-16",SAMPLE-RATE=44100,BIT-DEPTH=16
+#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio-atmos-2768"
+#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio-stereo-256"
+#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio-stereo-128"
+"#;
+        let q = parse_qualities(master);
+        assert_eq!(q.alac.as_deref(), Some("ALAC [24B-192kHz]"), "gana la mejor combinación");
+        assert_eq!(q.alac_set.len(), 2, "se conservan todas");
+        assert!(q.alac_set.contains(&"ALAC [16B-44.1kHz]".to_string()), "44100 se muestra como 44.1");
+        assert!(q.atmos);
+        assert_eq!(q.aac.as_deref(), Some("AAC [256kbps]"), "gana el bitrate más alto");
+        assert!(!q.binaural);
+    }
+
+    #[test]
+    fn un_track_sin_lossless_no_inventa_alac() {
+        let master = "#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio-stereo-256\"\n";
+        let q = parse_qualities(master);
+        assert!(q.alac.is_none());
+        assert_eq!(q.aac.as_deref(), Some("AAC [256kbps]"));
     }
 
     #[test]

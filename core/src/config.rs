@@ -154,14 +154,57 @@ impl Config {
         }
     }
 
+    /// Guarda el config **de forma atómica**.
+    ///
+    /// Escribir encima del archivo bueno con `write` deja una ventana en la que,
+    /// si la app se cierra o se cruzan dos guardados, el config queda a medias y
+    /// al arrancar no se puede leer. Se escribe a un temporal en la MISMA
+    /// carpeta (para que el rename no cruce discos) y se renombra encima, que en
+    /// los tres sistemas es atómico.
+    ///
+    /// El bot nunca tuvo este problema porque solo LEE su config; esta app lo
+    /// escribe, así que le toca resolverlo.
     pub fn save(&self, path: &Path) -> Result<()> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        let text = serde_yaml::to_string(self)
-            .map_err(|e| Error::Config(e.to_string()))?;
-        std::fs::write(path, text)?;
+        let text = serde_yaml::to_string(self).map_err(|e| Error::Config(e.to_string()))?;
+
+        let dir = path.parent().unwrap_or_else(|| Path::new("."));
+        let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
+        {
+            use std::io::Write;
+            tmp.write_all(text.as_bytes())?;
+            tmp.flush()?;
+            // Al disco de verdad antes de renombrar: si no, un corte de luz
+            // puede dejar el archivo nuevo vacío.
+            tmp.as_file().sync_all()?;
+        }
+        tmp.persist(path).map_err(|e| Error::Io(e.error))?;
         Ok(())
+    }
+
+    /// Aplica encima los ajustes que vengan, dejando intacto lo que no venga.
+    ///
+    /// La ventana manda un objeto con los ajustes que conoce. Si se sustituyera
+    /// el config entero por eso, cualquier ajuste que la ventana no pinte
+    /// (porque es nuevo, o porque falló al leerlo) volvería a su valor por
+    /// defecto sin que nadie lo pida. Mezclando, eso no puede pasar.
+    pub fn merge_patch(&self, patch: &serde_json::Value) -> Result<Self> {
+        let mut base = serde_json::to_value(self).map_err(|e| Error::Config(e.to_string()))?;
+        let (Some(base_map), Some(patch_map)) = (base.as_object_mut(), patch.as_object()) else {
+            return Err(Error::Config("los ajustes no son un objeto".into()));
+        };
+        for (k, v) in patch_map {
+            // Solo se aceptan claves que el config ya tiene: una clave inventada
+            // no puede colarse ni tirar el resto al fallar la lectura.
+            if base_map.contains_key(k) && !v.is_null() {
+                base_map.insert(k.clone(), v.clone());
+            }
+        }
+        let mut merged: Config = serde_json::from_value(base).map_err(|e| Error::Config(e.to_string()))?;
+        merged.source_path = self.source_path.clone();
+        Ok(merged)
     }
 
     /// Directorio de config por usuario: `%APPDATA%\ECAM` en Windows, XDG en el resto.
@@ -177,5 +220,51 @@ impl Config {
     /// pegada a medias. Se comprueba antes de pedir letras, como en el original.
     pub fn has_user_token(&self) -> bool {
         self.media_user_token.trim().len() >= 20
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn guardar_no_deja_el_config_a_medias() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.yaml");
+        let cfg = Config::default();
+        cfg.save(&path).unwrap();
+
+        // Un segundo guardado no puede dejar restos ni truncar el bueno.
+        let mut otro = Config::default();
+        otro.language = "ru".into();
+        otro.save(&path).unwrap();
+
+        let leido = Config::load(&path).unwrap();
+        assert_eq!(leido.language, "ru");
+        let sueltos: Vec<_> = std::fs::read_dir(dir.path()).unwrap().flatten()
+            .filter(|e| e.file_name() != "config.yaml").collect();
+        assert!(sueltos.is_empty(), "no deben quedar temporales tirados");
+    }
+
+    #[test]
+    fn un_ajuste_que_no_viene_en_el_parche_no_se_pierde() {
+        let mut cfg = Config::default();
+        cfg.language = "es-MX".into();
+        cfg.alac_max = 96000;
+
+        // La ventana solo manda el idioma.
+        let patch = serde_json::json!({ "language": "ru" });
+        let nuevo = cfg.merge_patch(&patch).unwrap();
+
+        assert_eq!(nuevo.language, "ru");
+        assert_eq!(nuevo.alac_max, 96000, "lo que no vino en el parche sigue igual");
+    }
+
+    #[test]
+    fn una_clave_inventada_no_rompe_el_guardado() {
+        let cfg = Config::default();
+        let patch = serde_json::json!({ "no-existe": 1, "language": "en-GB" });
+        let nuevo = cfg.merge_patch(&patch).unwrap();
+        assert_eq!(nuevo.language, "en-GB");
     }
 }

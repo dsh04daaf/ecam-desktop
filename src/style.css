@@ -172,3 +172,62 @@ dialog{max-height:86vh;display:flex;flex-direction:column}
 #downloads li.bad span{white-space:normal;overflow:visible;word-break:break-word;line-height:1.35}
 .wv{display:flex;align-items:center;justify-content:space-between;gap:.6rem;
   margin-top:.9rem;padding-top:.8rem;border-top:1px solid var(--line)}
+
+/* ── pestañas del panel ─────────────────────────────────────────────────── */
+.tabs{display:flex;gap:.25rem;margin-bottom:.7rem}
+.tab{flex:1;background:transparent;color:var(--fg-3);border:1px solid var(--line);
+  padding:.35rem .4rem;font-size:.78rem;border-radius:7px}
+.tab.on{background:var(--panel-2);color:var(--fg);border-color:var(--accent)}
+.tabbody{display:flex;flex-direction:column;gap:.5rem;min-height:0}
+.state{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:.3rem;font-size:.85rem}
+#engine-logs{
+  background:#0c0c10;border:1px solid var(--line);border-radius:8px;padding:.5rem;
+  font:11px/1.45 ui-monospace,Consolas,monospace;color:var(--fg-2);
+  max-height:38vh;overflow:auto;white-space:pre-wrap;word-break:break-word;margin:0;
+}
+#panel h3{font-size:.7rem;text-transform:uppercase;letter-spacing:.1em;color:var(--fg-3);margin:.6rem 0 .3rem}
+
+#history{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:.35rem}
+#history li{display:flex;align-items:center;gap:.4rem;justify-content:space-between;
+  background:var(--panel-2);border-radius:7px;padding:.45rem .55rem;font-size:.82rem;
+  border-left:2px solid transparent;animation:rise var(--t-med) var(--ease-out)}
+#history li.ok{border-left-color:var(--ok)}
+#history li.bad{border-left-color:var(--bad)}
+#history li span{display:flex;flex-direction:column;min-width:0}
+#history li em{font-style:normal;color:var(--fg-3);font-size:.74rem}
+#history li strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* ── calidades por pista ────────────────────────────────────────────────── */
+.badges{display:flex;gap:.25rem;flex-wrap:wrap;justify-content:flex-end}
+.badges b{font-weight:600;font-size:.68rem;padding:.1rem .35rem;border-radius:5px;
+  background:#22222b;color:var(--fg-2);white-space:nowrap}
+.qsel{padding:.2rem .3rem;font-size:.72rem;background:#1d1d24;flex:none}
+.qsel.big{padding:.5rem .6rem;font-size:.85rem}
+.items li.bad .tt strong{color:var(--bad)}
+.items .tt{flex:1;min-width:0;display:flex;flex-direction:column}
+.items .tt strong{font-size:.9rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.items .tt em{font-style:normal;color:var(--fg-2);font-size:.78rem}
+
+/* ── card de un link pegado ─────────────────────────────────────────────── */
+.card-preview{padding:1.2rem;animation:fadeUp var(--t-med) var(--ease-out);overflow-y:auto}
+.chead{display:flex;gap:1.1rem;margin-bottom:1rem}
+.chead img{width:150px;height:150px;border-radius:12px;object-fit:cover;background:var(--panel-2);flex:none}
+.chead h2{margin:.15rem 0;font-size:1.3rem}
+.chead em{font-style:normal;font-size:.72rem;text-transform:uppercase;letter-spacing:.1em;color:var(--fg-3)}
+.card-preview h3{font-size:.72rem;text-transform:uppercase;letter-spacing:.1em;color:var(--fg-3);margin:1rem 0 .4rem}
+.quals,.warns{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:.25rem;font-size:.87rem}
+.quals li::before{content:"• ";color:var(--accent)}
+.warns li{color:#ffcf6b;font-size:.83rem}
+.warns li::before{content:"⚠ "}
+.av.available{color:var(--ok)} .av.partial{color:#ffcf6b} .av.unavailable{color:var(--bad)}
+.alts{list-style:none;margin:0;padding:0;display:flex;gap:.6rem;flex-wrap:wrap}
+.alts li{display:flex;flex-direction:column;width:110px;cursor:pointer}
+.alts img{width:110px;height:110px;border-radius:8px;object-fit:cover;background:var(--panel-2)}
+.alts span{font-size:.78rem;margin-top:.25rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.alts em{display:block;font-style:normal;color:var(--fg-3);font-size:.72rem}
+.crow{display:flex;gap:.5rem;align-items:center;margin-top:1.2rem}
+.card-preview a{color:var(--accent)}
+
+/* ── diálogo de ajustes ─────────────────────────────────────────────────── */
+.dtop{display:flex;align-items:center;justify-content:space-between;margin-bottom:.6rem}
+.dtop h2{margin:0}

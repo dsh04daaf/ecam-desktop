@@ -53,7 +53,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    let report = collection::download_url(&cfg, &amp, &url, quality, Some(progress), Some(on_track), &Cancel::new()).await?;
+    let ctx = collection::Ctx {
+        cfg: &cfg, amp: &amp, quality,
+        progress: Some(progress), on_track: Some(on_track),
+        cancel: Cancel::new(), restart: None,
+    };
+    let report = collection::download_url(&ctx, &url).await?;
 
     println!(
         "\n{} listos, {} con problemas, {:.1} MB bajados",

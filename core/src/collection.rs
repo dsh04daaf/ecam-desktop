@@ -55,6 +55,68 @@ pub fn url_for(storefront: &str, kind: &str, id: &str) -> String {
 /// Se avisa track a track para que la UI no espere al final de un álbum.
 pub type OnTrack = std::sync::Arc<dyn Fn(usize, usize, &std::result::Result<TrackOutcome, Error>) + Send + Sync>;
 
+/// Relanza el wrapper y dice si volvió a estar listo.
+///
+/// Lo implementa la carcasa (es quien sabe si el wrapper vive en WSL o suelto).
+/// El core solo decide CUÁNDO hay que llamarlo, según el mapa de errores.
+pub type Restart = std::sync::Arc<
+    dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>> + Send + Sync,
+>;
+
+/// Todo lo que hace falta para una descarga, en un sitio.
+#[derive(Clone)]
+pub struct Ctx<'a> {
+    pub cfg: &'a Config,
+    pub amp: &'a Amp,
+    pub quality: Quality,
+    pub progress: Option<Progress>,
+    pub on_track: Option<OnTrack>,
+    pub cancel: Cancel,
+    pub restart: Option<Restart>,
+}
+
+impl Ctx<'_> {
+    fn notify(&self, i: usize, total: usize, r: &std::result::Result<TrackOutcome, Error>) {
+        if let Some(cb) = &self.on_track {
+            cb(i, total, r);
+        }
+    }
+}
+
+/// Baja una pista aplicando el mapa de errores.
+///
+/// Que una pista no esté disponible **no puede parar la playlist**: se apunta el
+/// motivo y se sigue con la siguiente. Y si lo que se cayó fue la sesión de
+/// FairPlay, se relanza el wrapper y se reintenta — eso no es un fallo de la
+/// descarga, es mantenimiento, y el usuario no tiene por qué enterarse.
+async fn download_track_resilient(ctx: &Ctx<'_>, job: TrackJob) -> std::result::Result<TrackOutcome, Error> {
+    let mut attempt = 1u32;
+    loop {
+        let res = download_track(ctx.cfg, ctx.amp, job.clone(), ctx.progress.clone(), &ctx.cancel).await;
+        let Err(err) = res else { return res };
+
+        let action = crate::recovery::classify(&err);
+        let last = attempt >= crate::recovery::MAX_ATTEMPTS;
+        if ctx.cancel.is_cancelled() || action == crate::recovery::Action::GiveUp || last {
+            return Err(err);
+        }
+
+        if action == crate::recovery::Action::RestartWrapperAndRetry {
+            tracing::warn!("sesión del wrapper caída ({err}); relanzando y reintentando");
+            if let Some(restart) = &ctx.restart {
+                if !restart().await {
+                    return Err(err); // no volvió: no tiene sentido insistir
+                }
+            }
+        } else {
+            tracing::info!("fallo temporal ({err}); reintento {}/{}", attempt + 1, crate::recovery::MAX_ATTEMPTS);
+        }
+
+        tokio::time::sleep(crate::recovery::backoff(attempt)).await;
+        attempt += 1;
+    }
+}
+
 #[derive(Default)]
 pub struct Report {
     pub done: Vec<TrackOutcome>,
@@ -73,35 +135,27 @@ impl Report {
 }
 
 /// Punto de entrada: cualquier URL de Apple Music.
-pub async fn download_url(
-    cfg: &Config,
-    amp: &Amp,
-    url: &str,
-    quality: Quality,
-    progress: Option<Progress>,
-    on_track: Option<OnTrack>,
-    cancel: &Cancel,
-) -> Result<Report> {
+pub async fn download_url(ctx: &Ctx<'_>, url: &str) -> Result<Report> {
     let target = parse_url(url).ok_or_else(|| Error::Other(format!("URL no reconocida: {url}")))?;
     match target {
         Target::Album { storefront, id, only_song } => {
-            download_album(cfg, amp, &storefront, &id, only_song.as_deref(), quality, &cfg.output_dir, progress, on_track, cancel).await
+            download_album(ctx, &storefront, &id, only_song.as_deref(), &ctx.cfg.output_dir.clone()).await
         }
         Target::Song { storefront, id } => {
             // Una canción suelta necesita su álbum para las etiquetas (número de
             // pista, sello, copyright): se resuelve y se baja solo esa.
-            let song = amp.song(&id).await?;
+            let song = ctx.amp.song(&id).await?;
             let album_id = song["data"][0]["relationships"]["albums"]["data"][0]["id"]
                 .as_str()
                 .ok_or_else(|| Error::Other("no se encontró el álbum de esa canción".into()))?
                 .to_string();
-            download_album(cfg, amp, &storefront, &album_id, Some(&id), quality, &cfg.output_dir, progress, on_track, cancel).await
+            download_album(ctx, &storefront, &album_id, Some(&id), &ctx.cfg.output_dir.clone()).await
         }
-        Target::Playlist { id, .. } => download_playlist(cfg, amp, &id, quality, progress, on_track, cancel).await,
-        Target::Artist { id, .. } => download_artist(cfg, amp, &id, quality, progress, on_track, cancel).await,
-        Target::Room { id, .. } => download_room(cfg, amp, &id, quality, progress, on_track, cancel).await,
+        Target::Playlist { id, .. } => download_playlist(ctx, &id).await,
+        Target::Artist { id, .. } => download_artist(ctx, &id).await,
+        Target::Room { id, .. } => download_room(ctx, &id).await,
         Target::MusicVideo { id, .. } => {
-            let path = crate::mv::download_music_video(cfg, amp, &id, &cfg.output_dir).await?;
+            let path = crate::mv::download_music_video(ctx.cfg, ctx.amp, &id, &ctx.cfg.output_dir).await?;
             let mut r = Report::default();
             r.done.push(TrackOutcome {
                 path,
@@ -169,19 +223,14 @@ fn folder_artist(album_attrs: &Value, tracks: &[Value]) -> String {
         .to_string()
 }
 
-#[allow(clippy::too_many_arguments)]
 pub async fn download_album(
-    cfg: &Config,
-    amp: &Amp,
+    ctx: &Ctx<'_>,
     url_storefront: &str,
     album_id: &str,
     only_song: Option<&str>,
-    quality: Quality,
     base_dir: &Path,
-    progress: Option<Progress>,
-    on_track: Option<OnTrack>,
-    cancel: &Cancel,
 ) -> Result<Report> {
+    let (cfg, amp, quality) = (ctx.cfg, ctx.amp, ctx.quality);
     // Metadata en la tienda de la URL; si esa tienda no lo tiene, la de la cuenta.
     let (mut meta, used_storefront) = {
         let by_url = Amp { storefront: url_storefront.to_string(), ..amp.clone() };
@@ -235,7 +284,7 @@ pub async fn download_album(
 
     for (i, (idx, t)) in selected.into_iter().enumerate() {
         // Cancelar significa parar YA, no al acabar el álbum.
-        if cancel.is_cancelled() {
+        if ctx.cancel.is_cancelled() {
             break;
         }
         let attrs = t["attributes"].clone();
@@ -251,24 +300,15 @@ pub async fn download_album(
             quality,
             cover: cover.clone(),
         };
-        let res = download_track(cfg, amp, job, progress.clone(), cancel).await;
-        if let Some(cb) = &on_track {
-            cb(i + 1, total, &res);
-        }
+        let res = download_track_resilient(ctx, job).await;
+        ctx.notify(i + 1, total, &res);
         report.push(label, res);
     }
     Ok(report)
 }
 
-pub async fn download_playlist(
-    cfg: &Config,
-    amp: &Amp,
-    playlist_id: &str,
-    quality: Quality,
-    progress: Option<Progress>,
-    on_track: Option<OnTrack>,
-    cancel: &Cancel,
-) -> Result<Report> {
+pub async fn download_playlist(ctx: &Ctx<'_>, playlist_id: &str) -> Result<Report> {
+    let (cfg, amp, quality) = (ctx.cfg, ctx.amp, ctx.quality);
     let (name, tracks) = amp.playlist(playlist_id).await?;
     let dir = cfg
         .output_dir
@@ -279,7 +319,7 @@ pub async fn download_playlist(
     let mut report = Report::default();
 
     for (i, t) in tracks.iter().enumerate() {
-        if cancel.is_cancelled() {
+        if ctx.cancel.is_cancelled() {
             break;
         }
         let attrs = t["attributes"].clone();
@@ -305,24 +345,15 @@ pub async fn download_playlist(
             quality,
             cover: None,
         };
-        let res = download_track(cfg, amp, job, progress.clone(), cancel).await;
-        if let Some(cb) = &on_track {
-            cb(i + 1, total, &res);
-        }
+        let res = download_track_resilient(ctx, job).await;
+        ctx.notify(i + 1, total, &res);
         report.push(label, res);
     }
     Ok(report)
 }
 
-pub async fn download_artist(
-    cfg: &Config,
-    amp: &Amp,
-    artist_id: &str,
-    quality: Quality,
-    progress: Option<Progress>,
-    on_track: Option<OnTrack>,
-    cancel: &Cancel,
-) -> Result<Report> {
+pub async fn download_artist(ctx: &Ctx<'_>, artist_id: &str) -> Result<Report> {
+    let (cfg, amp) = (ctx.cfg, ctx.amp);
     let (name, album_ids) = amp.artist_albums(artist_id).await?;
     let base: PathBuf = match crate::naming::artist_folder(cfg, artist_id, &name) {
         Some(f) => cfg.output_dir.join(f),
@@ -331,11 +362,12 @@ pub async fn download_artist(
 
     let mut report = Report::default();
     for id in album_ids {
-        if cancel.is_cancelled() {
+        if ctx.cancel.is_cancelled() {
             break;
         }
         // Un álbum que falle no puede tumbar la discografía entera.
-        match download_album(cfg, amp, &amp.storefront, &id, None, quality, &base, progress.clone(), on_track.clone(), cancel).await {
+        // Un álbum que falle no puede tumbar la discografía: se apunta y se sigue.
+        match download_album(ctx, &amp.storefront, &id, None, &base).await {
             Ok(r) => {
                 report.done.extend(r.done);
                 report.failed.extend(r.failed);
@@ -347,27 +379,20 @@ pub async fn download_artist(
 }
 
 /// Una "room" editorial: páginas curadas que mezclan álbumes y playlists.
-pub async fn download_room(
-    cfg: &Config,
-    amp: &Amp,
-    room_id: &str,
-    quality: Quality,
-    progress: Option<Progress>,
-    on_track: Option<OnTrack>,
-    cancel: &Cancel,
-) -> Result<Report> {
+pub async fn download_room(ctx: &Ctx<'_>, room_id: &str) -> Result<Report> {
+    let (cfg, amp) = (ctx.cfg, ctx.amp);
     let (title, items) = amp.room(room_id).await?;
     let base = cfg.output_dir.join(crate::naming::sanitize(&title, 200));
     tokio::fs::create_dir_all(&base).await?;
 
     let mut report = Report::default();
     for (kind, id) in items {
-        if cancel.is_cancelled() {
+        if ctx.cancel.is_cancelled() {
             break;
         }
         let r = match kind.as_str() {
-            "albums" => download_album(cfg, amp, &amp.storefront, &id, None, quality, &base, progress.clone(), on_track.clone(), cancel).await,
-            "playlists" => download_playlist(cfg, amp, &id, quality, progress.clone(), on_track.clone(), cancel).await,
+            "albums" => download_album(ctx, &amp.storefront, &id, None, &base).await,
+            "playlists" => download_playlist(ctx, &id).await,
             other => {
                 tracing::debug!("en la room hay un {other} que no se baja");
                 continue;

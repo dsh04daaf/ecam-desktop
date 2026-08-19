@@ -243,7 +243,7 @@ impl Amp {
         h
     }
 
-    async fn get(&self, path: &str, params: &[(&str, &str)], with_user: bool) -> Result<Value> {
+    pub(crate) async fn get(&self, path: &str, params: &[(&str, &str)], with_user: bool) -> Result<Value> {
         let url = if path.starts_with("http") { path.to_string() } else { format!("{AMP}{path}") };
         let r = HTTP.get(url).headers(self.headers(with_user)).query(params).send().await?;
         match r.status().as_u16() {
@@ -388,6 +388,32 @@ impl Amp {
         .await
     }
 
+    /// Rellena el bit depth y el sample rate reales del álbum abierto.
+    ///
+    /// Las pistas de un mismo álbum comparten formato casi siempre, así que se
+    /// mira UNA (la primera con stream) y se aplica a las demás — el bot hace lo
+    /// mismo. Una llamada por álbum en vez de una por pista.
+    pub async fn resolve_qualities(&self, browse: &mut Browse) {
+        if browse.kind == "artist" {
+            return;
+        }
+        let Some(first) = browse.items.iter().find(|i| i.playable).map(|i| i.id.clone()) else { return };
+
+        let Ok(song) = self.song(&first).await else { return };
+        let Some(hls) = song["data"][0]["attributes"]["extendedAssetUrls"]["enhancedHls"].as_str() else { return };
+        let Ok(resp) = http().get(hls).header("User-Agent", UA).send().await else { return };
+        let Ok(master) = resp.text().await else { return };
+
+        let q = crate::hls::parse_qualities(&master);
+        for item in browse.items.iter_mut().filter(|i| i.playable) {
+            let mut copia = q.clone();
+            // El Atmos sí varía pista a pista dentro de un mismo álbum, y eso lo
+            // dice el catálogo sin pedir nada más.
+            copia.atmos = item.traits.iter().any(|t| t.contains("atmos") || t.contains("spatial"));
+            item.quality = Some(copia);
+        }
+    }
+
     /// Letras. Se intenta primero línea a línea y luego sílaba a sílaba, que es
     /// el orden en el que Apple las publica.
     pub async fn lyrics_ttml(&self, song_id: &str) -> Result<Option<String>> {
@@ -460,6 +486,21 @@ pub struct BrowseItem {
     pub artist: String,
     pub extra: String,
     pub artwork: String,
+    /// `audioTraits` del catálogo: lossless, hi-res-lossless, atmos, spatial.
+    /// Es lo barato: viene con la metadata del álbum, sin llamadas extra.
+    #[serde(default)]
+    pub traits: Vec<String>,
+    /// Bit depth y sample rate REALES, del master playlist. Solo se resuelve
+    /// cuando hace falta, porque cuesta una llamada.
+    #[serde(default)]
+    pub quality: Option<crate::hls::TrackQuality>,
+    /// Si no tiene stream, no se ofrece bajarlo.
+    #[serde(default = "yes")]
+    pub playable: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 /// Lo que hay dentro de una entidad, para poder navegarla en vez de solo bajarla.
@@ -501,6 +542,12 @@ impl Amp {
                                     artist: ta["artistName"].as_str().unwrap_or_default().into(),
                                     extra: dur(ta["durationInMillis"].as_u64().unwrap_or(0)),
                                     artwork: String::new(),
+                                    traits: ta["audioTraits"].as_array().map(|a| {
+                                        a.iter().filter_map(|x| x.as_str().map(String::from)).collect()
+                                    }).unwrap_or_default(),
+                                    quality: None,
+                                    playable: ta["extendedAssetUrls"]["enhancedHls"].is_string()
+                                        || ta["playParams"]["id"].is_string(),
                                 }
                             })
                             .collect()
@@ -534,6 +581,12 @@ impl Amp {
                             artist: ta["artistName"].as_str().unwrap_or_default().into(),
                             extra: dur(ta["durationInMillis"].as_u64().unwrap_or(0)),
                             artwork: String::new(),
+                            traits: ta["audioTraits"].as_array().map(|a| {
+                                a.iter().filter_map(|x| x.as_str().map(String::from)).collect()
+                            }).unwrap_or_default(),
+                            quality: None,
+                            playable: ta["extendedAssetUrls"]["enhancedHls"].is_string()
+                                || ta["playParams"]["id"].is_string(),
                         }
                     })
                     .collect();
@@ -563,6 +616,11 @@ impl Amp {
                             artist: aa["artistName"].as_str().unwrap_or_default().into(),
                             extra: aa["releaseDate"].as_str().unwrap_or_default().chars().take(4).collect(),
                             artwork: aa["artwork"]["url"].as_str().unwrap_or_default().replace("{w}", "300").replace("{h}", "300"),
+                            traits: aa["audioTraits"].as_array().map(|a| {
+                                a.iter().filter_map(|x| x.as_str().map(String::from)).collect()
+                            }).unwrap_or_default(),
+                            quality: None,
+                            playable: true,
                         }
                     })
                     .collect();

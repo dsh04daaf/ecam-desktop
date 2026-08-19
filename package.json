@@ -3,7 +3,7 @@
   "private": true,
   "scripts": {
     "preview": "node dev-server.js",
-    "test": "node --test tests/bridge.test.mjs tests/commands.test.mjs"
+    "test": "node --test tests/bridge.test.mjs tests/commands.test.mjs tests/i18n.test.mjs"
   },
   "dependencies": {
     "express": "^4.21.2"

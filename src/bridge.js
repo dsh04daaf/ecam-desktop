@@ -101,9 +101,14 @@
       // Por tipo e id: la URL la arma el core con la tienda de la cuenta.
       downloadItem: (kind, id, quality) => call('download_item', { kind, id, quality }),
       cancel: (job) => call('cancel', { job }),
-      importWidevine: (deviceKey, clientId) =>
-        call('import_widevine', { deviceKey, clientId }),
-      loadWidevine: (paths) => call('load_widevine', { paths }),
+      preview: (url) => call('preview', { url }),
+      historyList: () => call('history_list'),
+      historyClear: () => call('history_clear'),
+      historyRemove: (id) => call('history_remove', { id }),
+      openFolder: (path) => call('open_folder', { path }),
+      restartWrapper: () => call('restart_wrapper'),
+      wrapperLogs: () => call('wrapper_logs'),
+      importWidevine: (paths) => call('import_widevine', { paths }),
       widevineReady: () => call('widevine_ready'),
     };
   }

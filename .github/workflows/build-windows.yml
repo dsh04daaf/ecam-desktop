@@ -41,6 +41,10 @@ jobs:
       - name: Probar el contrato de comandos UI-Rust
         run: node --test tests/commands.test.mjs
 
+      # Los diccionarios se desincronizan solos y aparecen huecos a media pantalla.
+      - name: Probar los idiomas
+        run: node --test tests/i18n.test.mjs
+
       - name: Comprobar que no se cuela ninguna credencial en el binario
         shell: pwsh
         run: |
@@ -84,7 +88,9 @@ jobs:
       # están, y si no el instalador sale sin ellas: la app las puede importar
       # después desde Ajustes. Nunca van dentro del binario.
       - name: Empaquetar credenciales de Widevine
-        if: env.WIDEVINE_DEVICE_KEY != ''
+        # OJO: la condición mira el SECRETO, no `env`. Con `env.X` la variable
+        # aún no existe cuando se evalúa el `if` y el paso se salta siempre.
+        if: ${{ secrets.WIDEVINE_DEVICE_KEY != '' }}
         env:
           WIDEVINE_DEVICE_KEY: ${{ secrets.WIDEVINE_DEVICE_KEY }}
           WIDEVINE_CLIENT_ID: ${{ secrets.WIDEVINE_CLIENT_ID }}
@@ -95,6 +101,11 @@ jobs:
             [Convert]::FromBase64String($env:WIDEVINE_DEVICE_KEY))
           [IO.File]::WriteAllBytes("src-tauri/resources/widevine/client_id.bin",
             [Convert]::FromBase64String($env:WIDEVINE_CLIENT_ID))
+          # Que el build falle aquí y no en la máquina del usuario.
+          if (-not (Test-Path src-tauri/resources/widevine/device.pem)) {
+            Write-Error "las credenciales no quedaron en resources"; exit 1
+          }
+          Write-Host "credenciales de Widevine empaquetadas"
 
       # OJO: `cargo build --release` compila el .exe pero NO empaqueta nada.
       # El instalador lo produce el CLI de Tauri.

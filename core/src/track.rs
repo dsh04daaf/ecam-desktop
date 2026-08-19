@@ -50,6 +50,7 @@ pub struct TrackOutcome {
     pub secs_total: f32,
 }
 
+#[derive(Clone)]
 pub struct TrackJob {
     pub track: Value,
     pub album: Value,
