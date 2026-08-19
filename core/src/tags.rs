@@ -31,8 +31,12 @@ pub fn write(
     };
     tag.set_album_artist(album_artist);
 
+    // Un music video no tiene álbum: escribir la etiqueta vacía deja un campo
+    // en blanco en la biblioteca, que se ve peor que no tenerlo.
     let album_name = if track["albumName"].is_string() { s(track, "albumName") } else { s(album, "name") };
-    tag.set_album(album_name);
+    if !album_name.is_empty() {
+        tag.set_album(album_name);
+    }
 
     let release = if album["releaseDate"].is_string() { s(album, "releaseDate") } else { s(track, "releaseDate") };
     let year: String = release.chars().take(4).collect();
@@ -56,11 +60,13 @@ pub fn write(
         tag.set_genre(g);
     }
 
-    let track_num = track["trackNumber"].as_u64().unwrap_or(1) as u16;
-    let track_total = album["trackCount"].as_u64().unwrap_or(0) as u16;
-    tag.set_track(track_num, track_total);
-    let disc = track["discNumber"].as_u64().unwrap_or(1) as u16;
-    tag.set_disc(disc, 0);
+    // Número de pista y disco solo si de verdad vienen: los videos no los traen.
+    if let Some(n) = track["trackNumber"].as_u64() {
+        tag.set_track(n as u16, album["trackCount"].as_u64().unwrap_or(0) as u16);
+    }
+    if let Some(d) = track["discNumber"].as_u64() {
+        tag.set_disc(d as u16, 0);
+    }
 
     let copyright = s(album, "copyright");
     if !copyright.is_empty() {

@@ -342,17 +342,29 @@ pub fn mux<R: Read + Seek, W: Write>(sources: &mut [(MvTrack, R)], out: &mut W) 
     out.write_all(&((mdat_size + 8) as u32).to_be_bytes())?;
     out.write_all(b"mdat")?;
 
-    // Los samples de un mismo trozo son contiguos en el origen: se copian de una
-    // lectura, no de una por sample.
+    // Los samples de un trozo NO tienen por qué ser contiguos en el origen: un
+    // trozo de ~1 s puede cruzar de un fragmento al siguiente, y en medio está
+    // el `moof`. Leer el rango entero de una vez se traga esa cabecera y la
+    // mete dentro del vídeo (se ve como "Invalid NAL unit size"). Se copian por
+    // tramos contiguos: una lectura por tramo, no una por sample.
     let mut buf = Vec::new();
     for (_, idx, a, b) in &plan {
         let (track, src) = &mut sources[*idx];
-        let start = track.samples[*a].offset;
-        let len: u64 = track.samples[*a..*b].iter().map(|s| s.size as u64).sum();
-        src.seek(SeekFrom::Start(start))?;
-        buf.resize(len as usize, 0);
-        src.read_exact(&mut buf)?;
-        out.write_all(&buf)?;
+        let mut i = *a;
+        while i < *b {
+            let start = track.samples[i].offset;
+            let mut len = track.samples[i].size as u64;
+            let mut j = i + 1;
+            while j < *b && track.samples[j].offset == start + len {
+                len += track.samples[j].size as u64;
+                j += 1;
+            }
+            src.seek(SeekFrom::Start(start))?;
+            buf.resize(len as usize, 0);
+            src.read_exact(&mut buf)?;
+            out.write_all(&buf)?;
+            i = j;
+        }
     }
     Ok(())
 }
@@ -561,6 +573,44 @@ mod tests {
     #[test]
     fn si_todo_es_sync_no_se_emite_stss() {
         assert!(tbl_stss(&[sample(1, 10)]).is_none());
+    }
+
+    /// Regresión: los samples de un mismo trozo NO son contiguos cuando el
+    /// trozo cruza de un fragmento al siguiente (en medio va el `moof`).
+    /// Copiarlos de una sola lectura mete la cabecera dentro del vídeo y el
+    /// decodificador reporta "Invalid NAL unit size". Verificado contra el
+    /// muxer original: con el fix el archivo sale byte a byte idéntico.
+    #[test]
+    fn se_copian_por_tramos_contiguos_no_por_rango() {
+        // Dos samples pegados y un tercero detrás de un hueco (el moof).
+        let track = MvTrack {
+            kind: *b"vide",
+            timescale: 1000,
+            stsd: mk(b"stsd", &[0u8; 8]),
+            width: 0,
+            height: 0,
+            language: 0,
+            samples: vec![
+                MvSample { offset: 0, size: 4, duration: 500, cts: 0, is_sync: true },
+                MvSample { offset: 4, size: 4, duration: 500, cts: 0, is_sync: true },
+                MvSample { offset: 100, size: 4, duration: 500, cts: 0, is_sync: true },
+            ],
+        };
+        // El origen tiene basura entre medias, como el moof de verdad.
+        let mut src = vec![0xEEu8; 200];
+        src[0..8].copy_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8]);
+        src[100..104].copy_from_slice(&[9, 9, 9, 9]);
+
+        let mut sources = vec![(track, std::io::Cursor::new(src))];
+        let mut out = Vec::new();
+        mux(&mut sources, &mut out).unwrap();
+
+        let mdat = crate::mp4::boxes(&out).find(|b| b.is(b"mdat")).unwrap();
+        assert_eq!(
+            mdat.payload,
+            &[1, 2, 3, 4, 5, 6, 7, 8, 9, 9, 9, 9],
+            "solo los bytes de los samples, sin la basura de en medio"
+        );
     }
 
     #[test]

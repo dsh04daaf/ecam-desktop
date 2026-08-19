@@ -125,16 +125,44 @@ pub struct Cdm {
     request_msg: Vec<u8>,
 }
 
-/// Carga las credenciales del dispositivo desde donde diga el config.
+/// Dónde se buscan las credenciales del dispositivo, en orden.
+///
+/// El blob de Widevine no es un secreto del usuario: es el del propio
+/// reproductor y viene con la app. Aun así se lee de disco y no se empotra en el
+/// binario, que es la regla de la casa (una credencial dentro de un ejecutable
+/// se saca con `strings` y no se puede rotar sin recompilar). Para el usuario es
+/// transparente: el instalador la deja en `resources/` y aquí se encuentra sola.
+fn candidates(name: &str) -> Vec<std::path::PathBuf> {
+    let mut out = vec![Config::config_dir().join("widevine").join(name)];
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            out.push(dir.join("resources").join("widevine").join(name));
+            out.push(dir.join("widevine").join(name));
+        }
+    }
+    out
+}
+
+fn find_credential(explicit: Option<&std::path::PathBuf>, name: &str) -> Option<std::path::PathBuf> {
+    if let Some(p) = explicit {
+        if p.exists() {
+            return Some(p.clone());
+        }
+    }
+    candidates(name).into_iter().find(|p| p.exists())
+}
+
+/// Carga las credenciales del dispositivo.
 fn load_device(cfg: &Config) -> Result<(RsaPrivateKey, Vec<u8>)> {
-    let key_path = cfg.widevine_device_key.as_ref().ok_or_else(|| {
-        Error::Config(
-            "los music videos necesitan `widevine-device-key` en el config (ruta a la llave en PEM)".into(),
-        )
+    let key_path = find_credential(cfg.widevine_device_key.as_ref(), "device.pem").ok_or_else(|| {
+        Error::Config(format!(
+            "faltan las credenciales de Widevine para los music videos. Se buscaron en: {}",
+            candidates("device.pem").iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ")
+        ))
     })?;
-    let id_path = cfg.widevine_client_id.as_ref().ok_or_else(|| {
-        Error::Config("los music videos necesitan `widevine-client-id` en el config".into())
-    })?;
+    let id_path = find_credential(cfg.widevine_client_id.as_ref(), "client_id.bin")
+        .ok_or_else(|| Error::Config("falta el ClientId de Widevine (client_id.bin)".into()))?;
+    let (key_path, id_path) = (&key_path, &id_path);
 
     let pem = std::fs::read_to_string(key_path)
         .map_err(|e| Error::Config(format!("no se pudo leer {}: {e}", key_path.display())))?;
