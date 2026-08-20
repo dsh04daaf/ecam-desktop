@@ -68,3 +68,35 @@ npm install && npm run preview # http://127.0.0.1:3026
 usa el wrapper que ya tiene sesión iniciada: no hay login que pasar para probar
 el resto. Lo que toca disco de la máquina (instalar la distro, cerrar sesión)
 responde con un error a propósito.
+
+## macOS (Apple Silicon)
+
+Rama `macos-arm`, workflow `build-macos.yml` (`macos-14`, arm64). Sale un
+`.dmg` y un `.zip` con el `.app`.
+
+**El motor no viaja dentro.** El wrapper es un ELF **x86-64** de Android y en Mac
+no hay WSL, así que la app arranca en modo `external`: la primera pantalla pide
+la dirección `host:puerto` de un motor que corra en otro sitio (la VPS, por
+ejemplo) y de ese mismo host se deriva el 30020 de la cuenta. Empaquetar el
+motor en el Mac necesita una de estas dos, y ninguna está hecha:
+
+- Docker Desktop / Colima con `linux/amd64` bajo Rosetta.
+- Wrapper recompilado para aarch64 con las `.so` `arm64-v8a` del APK, dentro de
+  una VM ligera. **Sin verificar** que exista `libCoreLSKD.so` en arm64.
+
+**El puerto 10020 no lleva cifrado ni autenticación.** Por él viajan las llaves
+de FairPlay y el audio en claro, así que **no se expone a internet**: se saca por
+un túnel SSH (`ssh -L 10020:127.0.0.1:10020 …`, y otro para el 30020) o por una
+red privada tipo Tailscale, y en la app se pone `127.0.0.1:10020`. Además, el
+descifrado va por lotes con una ventana de 256 KB en vuelo: con latencia de WAN
+va bastante más lento que en local, y eso es de esperar, no un fallo.
+
+**Gatekeeper.** Sin Apple Developer ID la app va firmada solo ad-hoc. Arranca
+(en arm64 un binario sin firma ni siquiera se ejecuta), pero al bajarla del
+navegador macOS la marca en cuarentena y dice que está dañada. Se quita con:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/ECAM.app
+```
+
+o abriéndola una vez desde Ajustes → Privacidad y seguridad → «Abrir de todos modos».

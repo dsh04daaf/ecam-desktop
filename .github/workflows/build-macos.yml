@@ -1,0 +1,160 @@
+name: build-macos
+
+# Compila ECAM Desktop para Mac con Apple Silicon (arm64).
+#
+# Ojo con dos cosas que NO son como en Windows:
+#  1. El motor de descifrado (el wrapper) es un ELF x86-64 de Android y en Mac
+#     no hay WSL: no se empaqueta aquí. La app arranca en modo `external` y pide
+#     la dirección de un motor que corra en otro sitio.
+#  2. Sin Apple Developer ID la app va firmada solo ad-hoc. Es suficiente para
+#     que arranque (en arm64 un binario sin firma NO se ejecuta), pero Gatekeeper
+#     la pone en cuarentena al bajarla del navegador. Ver el README.
+
+on:
+  push:
+    tags: ["mac-v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-14
+    # A nivel de job: en el `if` de un paso, `secrets` no existe y GitHub
+    # rechaza el workflow entero.
+    env:
+      WIDEVINE_DEVICE_KEY: ${{ secrets.WIDEVINE_DEVICE_KEY }}
+      WIDEVINE_CLIENT_ID: ${{ secrets.WIDEVINE_CLIENT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            src-tauri
+
+      # Las mismas pruebas que en Windows: si el camino de descifrado se rompe,
+      # el build falla antes de empaquetar nada.
+      - name: Probar el core
+        run: cargo test -p ecam-core --manifest-path Cargo.toml
+
+      - name: Probar el puente de la UI
+        run: node --test tests/bridge.test.mjs
+
+      - name: Probar el contrato de comandos UI-Rust
+        run: node --test tests/commands.test.mjs
+
+      - name: Probar los idiomas
+        run: node --test tests/i18n.test.mjs
+
+      - name: Probar las guardas de CSS
+        run: node --test tests/style.test.mjs
+
+      - name: Comprobar que no se cuela ninguna credencial en el binario
+        run: |
+          if grep -rlE 'BEGIN (RSA )?PRIVATE KEY' src-tauri/src core/src; then
+            echo "hay una llave privada en el código"; exit 1
+          fi
+          echo "sin llaves en el código"
+
+      # ffmpeg solo hace falta para el artwork animado, pero pedirle al usuario
+      # que lo instale aparte significa que esa función falla en silencio.
+      # El build de gyan.dev es SOLO Windows; para arm64 se usa `ffmpeg-static`,
+      # que publica binario darwin-arm64.
+      - name: Embeber ffmpeg (arm64)
+        run: |
+          mkdir -p src-tauri/resources
+          # Fuera del árbol del repo: aquí no hace falta ninguna otra dependencia.
+          npm install --prefix "$RUNNER_TEMP/ff" --no-save --silent ffmpeg-static
+          cp "$RUNNER_TEMP/ff/node_modules/ffmpeg-static/ffmpeg" src-tauri/resources/ffmpeg
+          chmod +x src-tauri/resources/ffmpeg
+          # En Apple Silicon un binario sin firma NO se ejecuta: ni siquiera
+          # arranca para decir por qué. Se firma ad-hoc antes de empaquetarlo.
+          codesign --force --sign - src-tauri/resources/ffmpeg
+          file src-tauri/resources/ffmpeg
+          lipo -archs src-tauri/resources/ffmpeg | grep -q arm64 \
+            || { echo "el ffmpeg embebido no es arm64"; exit 1; }
+
+      # El bug raíz de ECBP fue un flag de configuración ausente. Se comprueba.
+      - name: Verificar withGlobalTauri
+        run: |
+          node -e "
+            const c = require('./src-tauri/tauri.conf.json');
+            if (c.app.withGlobalTauri !== true) {
+              console.error('withGlobalTauri no está activo: window.__TAURI__ no se inyectará');
+              process.exit(1);
+            }
+            console.log('withGlobalTauri OK');
+          "
+
+      # Que el .icns esté y sea válido: sin él el bundle sale con el icono
+      # genérico y no falla por ningún lado.
+      - name: Verificar el icono de macOS
+        run: |
+          test -f src-tauri/icons/icon.icns || { echo "falta icon.icns"; exit 1; }
+          head -c 4 src-tauri/icons/icon.icns | grep -q icns \
+            || { echo "icon.icns no tiene cabecera icns"; exit 1; }
+
+      - name: Instalar Tauri CLI
+        uses: taiki-e/install-action@v2
+        with:
+          tool: tauri-cli
+
+      # Credenciales de Widevine (music videos). Si no están, el instalador sale
+      # sin ellas y se importan luego desde Ajustes. Nunca van dentro del binario.
+      - name: Empaquetar credenciales de Widevine
+        if: env.WIDEVINE_DEVICE_KEY != ''
+        run: |
+          mkdir -p src-tauri/resources/widevine
+          printf '%s' "$WIDEVINE_DEVICE_KEY" | base64 --decode > src-tauri/resources/widevine/device.pem
+          printf '%s' "$WIDEVINE_CLIENT_ID"  | base64 --decode > src-tauri/resources/widevine/client_id.bin
+          test -s src-tauri/resources/widevine/device.pem \
+            || { echo "las credenciales no quedaron en resources"; exit 1; }
+          echo "credenciales de Widevine empaquetadas"
+
+      # OJO: `cargo build --release` compila el binario pero NO empaqueta nada.
+      # El .app y el .dmg los produce el CLI de Tauri.
+      - name: Compilar la app y el .dmg
+        working-directory: src-tauri
+        run: cargo tauri build --target aarch64-apple-darwin
+
+      - name: Recoger artefactos
+        run: |
+          BUNDLE=src-tauri/target/aarch64-apple-darwin/release/bundle
+          mkdir -p dist
+          # Sin clavar el nombre: el .app lo bautiza `productName` y el binario de
+          # dentro depende de la versión de Tauri. Si cambian, esto sigue valiendo.
+          APP=$(find "$BUNDLE/macos" -maxdepth 1 -name "*.app" | head -1)
+          test -n "$APP" || { echo "no se generó el .app"; ls -R "$BUNDLE" || true; exit 1; }
+          BIN=$(find "$APP/Contents/MacOS" -maxdepth 1 -type f | head -1)
+
+          # Que sea de verdad arm64 y no un x86-64 colado por el runner.
+          lipo -archs "$BIN" | grep -q arm64 \
+            || { echo "el binario no es arm64: $(lipo -archs "$BIN")"; exit 1; }
+
+          # Firma ad-hoc de todo el bundle, con los recursos ya dentro.
+          codesign --force --deep --sign - "$APP"
+          codesign --verify --deep --strict "$APP" && echo "firma ad-hoc OK"
+
+          ditto -c -k --keepParent "$APP" dist/ECAM-macos-arm64.zip
+          find "$BUNDLE/dmg" -name "*.dmg" -exec cp {} dist/ \; 2>/dev/null || true
+          ls -la dist
+          test -n "$(ls -A dist)" || { echo "no se generó ningún artefacto"; exit 1; }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ECAM-macos-arm64
+          path: dist/*
+          retention-days: 7
+
+      - name: Publicar en el Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*

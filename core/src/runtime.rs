@@ -30,7 +30,22 @@ impl Default for Backend {
         if cfg!(windows) {
             Backend::Wsl { distro: "ECAM".into() }
         } else {
+            // macOS y Linux: no hay WSL. El wrapper es un ELF x86-64 de Android,
+            // así que corre fuera de la app y aquí solo se le habla por TCP.
             Backend::External
+        }
+    }
+}
+
+impl Backend {
+    /// Nombre corto para la ventana. La UI decide con esto qué pantalla enseñar:
+    /// con `external` no hay nada que instalar ni ningún login que hacer desde
+    /// aquí, solo un motor al que conectarse.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Backend::External => "external",
+            Backend::Wsl { .. } => "wsl",
+            Backend::Local { .. } => "local",
         }
     }
 }

@@ -46,6 +46,11 @@ impl AppState {
 
 #[derive(Serialize)]
 struct WrapperState {
+    /// `wsl` (Windows), `external` (macOS/Linux) o `local`. La ventana lo
+    /// necesita: con `external` no hay distro que instalar ni login que hacer
+    /// desde aquí, y enseñar esas pantallas es mandar al usuario a un botón
+    /// que no hace nada.
+    backend: &'static str,
     distro_installed: bool,
     has_session: bool,
     listening: bool,
@@ -59,6 +64,7 @@ async fn wrapper_state(state: State<'_, AppState>) -> Result<WrapperState, Strin
     let port = state.cfg.lock().unwrap().decrypt_port.clone();
     let listening = Wrapper::probe(&port);
     Ok(WrapperState {
+        backend: rt.backend.kind(),
         distro_installed: rt.distro_installed().await,
         has_session: rt.has_session().await,
         listening,

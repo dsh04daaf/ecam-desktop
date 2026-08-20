@@ -3,6 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
+import { readFileSync } from 'node:fs';
 
 const require = createRequire(import.meta.url);
 const i18n = require('../src/i18n.js');
@@ -41,4 +42,16 @@ test('el idioma se deduce del config o del sistema', () => {
   assert.equal(i18n.detect('en-GB'), 'en');
   assert.equal(i18n.detect('ja-JP'), 'en', 'lo que no tenemos cae al inglés');
   assert.ok(['es', 'en', 'ru'].includes(i18n.detect('')), 'sin config, algo válido');
+});
+
+// Una pantalla nueva se escribe con `data-t="algo"` y es facilísimo olvidarse de
+// dar de alta esa clave: el resultado es una etiqueta EN BLANCO en la app, que
+// no falla por ningún lado. Aquí se cruzan el HTML y el diccionario.
+test('cada data-t del HTML existe en el diccionario', () => {
+  const html = readFileSync(new URL('../src/index.html', import.meta.url), 'utf8');
+  const claves = new Set();
+  for (const m of html.matchAll(/data-t(?:-ph)?="([^"]+)"/g)) claves.add(m[1]);
+  assert.ok(claves.size > 20, 'no se leyó el HTML bien');
+  const faltan = [...claves].filter((k) => !(k in i18n.dicts.es));
+  assert.deepEqual(faltan, [], `claves sin traducir: ${faltan.join(', ')}`);
 });

@@ -123,6 +123,10 @@
 
   /// Qué pantalla toca. Función pura para poder probarla sin abrir la app.
   bridge.screenFor = function (state) {
+    // Con el motor fuera de esta máquina (macOS/Linux) no hay distro que
+    // instalar ni login que hacer desde aquí: el wrapper ya trae su sesión.
+    // Lo único que falta saber es a qué dirección hablarle.
+    if (state.backend === 'external') return state.listening ? 'main' : 'connect';
     if (!state.distro_installed) return 'install';
     if (!state.has_session) return 'login';
     return 'main';

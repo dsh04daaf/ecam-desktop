@@ -1,7 +1,7 @@
 // Lógica de la ventana. Todo lo que sea decidir algo de verdad vive en el core;
 // aquí se enseñan pantallas, se recogen pulsaciones y se traduce.
 const $ = (id) => document.getElementById(id);
-const screens = ['install', 'login', '2fa', 'main'];
+const screens = ['install', 'connect', 'login', '2fa', 'main'];
 const t = (k, v) => i18n.t(k, v);
 
 // ── idioma ─────────────────────────────────────────────────────────────────
@@ -175,10 +175,21 @@ async function renderEngine() {
   try {
     const s = await ecam.wrapperState();
     const store = s.account?.storefront_id ? s.account.storefront_id.split('-')[0] : '—';
+    // La dirección de verdad, no un 10020 escrito a mano: si el motor está en
+    // otra máquina, ver el puerto equivocado aquí manda a buscar donde no es.
+    let addr = '';
+    try { addr = (await ecam.getConfig())['decrypt-port'] || ''; } catch { /* sin core */ }
+    const remoto = s.backend === 'external';
     ul.innerHTML = `
       <li>${s.has_session ? '✓' : '✕'} ${s.has_session ? t('session_ok') : t('session_none')}</li>
-      <li>${s.listening ? '✓' : '✕'} ${s.listening ? t('listening') : t('not_listening')} · 10020</li>
-      <li>${t('availability')}: ${store}</li>`;
+      <li>${s.listening ? '✓' : '✕'} ${s.listening ? t('listening') : t('not_listening')}${addr ? ` · ${addr}` : ''}</li>
+      <li>${t('availability')}: ${store}</li>
+      ${remoto ? `<li class="hint">${t('engine_remote')}</li>` : ''}`;
+    // Con el motor fuera, relanzar y cerrar sesión desde aquí NO harían nada
+    // (`launch_command` es un `true` y `sign_out` no tiene dónde borrar).
+    // Un botón que miente es peor que no tenerlo.
+    $('eng-restart').classList.toggle('hidden', remoto);
+    $('eng-signout').classList.toggle('hidden', remoto);
   } catch (e) {
     ul.innerHTML = `<li class="bad">${e}</li>`;
   }
@@ -676,6 +687,31 @@ $('form-2fa').addEventListener('submit', async (e) => {
   }
 });
 
+// ── motor remoto (macOS/Linux) ─────────────────────────────────────────────
+// Fuera de Windows no hay WSL: el wrapper corre en otra máquina (o en otra cosa
+// de esta) y lo único que la app necesita saber es a qué dirección hablarle. Se
+// guarda en el config como cualquier otro ajuste, y del host sale también el
+// 30020 de la cuenta.
+$('form-connect').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  $('connect-error').textContent = '';
+  const addr = $('connect-addr').value.trim();
+  if (!/^[^\s:]+:\d{1,5}$/.test(addr)) {
+    $('connect-error').textContent = t('connect_bad_addr');
+    return;
+  }
+  try {
+    await ecam.setConfig({ 'decrypt-port': addr });
+    // Solo se sale de aquí si el motor contesta de verdad. Guardar y entrar a
+    // ciegas deja la app dentro con todo roto y sin decir por qué.
+    const state = await ecam.wrapperState();
+    if (state.listening) await refresh();
+    else $('connect-error').textContent = t('connect_unreachable');
+  } catch (err) {
+    $('connect-error').textContent = String(err);
+  }
+});
+
 // ── arranque ───────────────────────────────────────────────────────────────
 async function refresh() {
   const forced = new URLSearchParams(location.search).get('screen');
@@ -685,7 +721,12 @@ async function refresh() {
     return;
   }
   const state = await ecam.wrapperState();
-  show(ecam.screenFor(state));
+  const next = ecam.screenFor(state);
+  if (next === 'connect') {
+    // Se rellena con lo que ya haya para no obligar a teclearlo cada vez.
+    try { $('connect-addr').value = (await ecam.getConfig())['decrypt-port'] || ''; } catch { /* sin core */ }
+  }
+  show(next);
   if (state.has_session && !state.listening) await ecam.startWrapper(null, null);
   renderHistory();
 }

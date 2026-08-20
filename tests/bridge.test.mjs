@@ -101,9 +101,19 @@ test('cada comando llega al core con su nombre y sus argumentos exactos', async 
 });
 
 test('la pantalla se elige según lo que diga el core', () => {
-  assert.equal(bridge.screenFor({ distro_installed: false, has_session: false }), 'install');
-  assert.equal(bridge.screenFor({ distro_installed: true, has_session: false }), 'login');
-  assert.equal(bridge.screenFor({ distro_installed: true, has_session: true }), 'main');
+  const wsl = (s) => ({ backend: 'wsl', ...s });
+  assert.equal(bridge.screenFor(wsl({ distro_installed: false, has_session: false })), 'install');
+  assert.equal(bridge.screenFor(wsl({ distro_installed: true, has_session: false })), 'login');
+  assert.equal(bridge.screenFor(wsl({ distro_installed: true, has_session: true })), 'main');
+});
+
+// Fuera de Windows el motor está fuera de la app. Sin esto, `distro_installed`
+// sale true y `has_session` false, y la app manda al usuario a la pantalla de
+// login de Apple, que en ese modo NO HACE NADA (`launch_command` es un `true`).
+test('con el motor fuera, la pantalla es conectar hasta que responda', () => {
+  const ext = (s) => ({ backend: 'external', distro_installed: true, ...s });
+  assert.equal(bridge.screenFor(ext({ has_session: false, listening: false })), 'connect');
+  assert.equal(bridge.screenFor(ext({ has_session: true, listening: true })), 'main');
 });
 
 test('un link pegado se reconoce y no se manda al buscador', () => {

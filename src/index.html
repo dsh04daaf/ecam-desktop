@@ -15,6 +15,18 @@
     <button id="btn-install" class="primary" data-t="install_go"></button>
   </section>
 
+  <!-- 1b. Motor fuera de esta maquina (macOS/Linux: no hay WSL) -->
+  <section id="screen-connect" class="screen center hidden">
+    <h1 data-t="connect_title"></h1>
+    <p class="lead" data-t="connect_lead"></p>
+    <form id="form-connect">
+      <input id="connect-addr" placeholder="127.0.0.1:10020" autocomplete="off" spellcheck="false" />
+      <button class="primary" type="submit" data-t="connect_go"></button>
+    </form>
+    <p class="hint" data-t="connect_hint"></p>
+    <p id="connect-error" class="error"></p>
+  </section>
+
   <!-- 2. Login -->
   <section id="screen-login" class="screen center hidden">
     <h1 data-t="login_title"></h1>
