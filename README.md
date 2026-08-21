@@ -74,15 +74,31 @@ responde con un error a propósito.
 Rama `macos-arm`, workflow `build-macos.yml` (`macos-14`, arm64). Sale un
 `.dmg` y un `.zip` con el `.app`.
 
-**El motor no viaja dentro.** El wrapper es un ELF **x86-64** de Android y en Mac
-no hay WSL, así que la app arranca en modo `external`: la primera pantalla pide
-la dirección `host:puerto` de un motor que corra en otro sitio (la VPS, por
-ejemplo) y de ese mismo host se deriva el 30020 de la cuenta. Empaquetar el
-motor en el Mac necesita una de estas dos, y ninguna está hecha:
+**El motor va en Docker, nativo.** Upstream publica un release **aarch64**
+(`wrapper.arm64.latest`): el `wrapper`, el `linker64` y las 99 `.so`
+—`libCoreLSKD.so` incluida— son ARM de verdad, así que en Apple Silicon corre
+nativo, sin Rosetta ni emulación. La app lo gestiona con `Backend::Docker`:
 
-- Docker Desktop / Colima con `linux/amd64` bajo Rosetta.
-- Wrapper recompilado para aarch64 con las `.so` `arm64-v8a` del APK, dentro de
-  una VM ligera. **Sin verificar** que exista `libCoreLSKD.so` en arm64.
+- La imagen se construye con `scripts/build-arm64-image.sh` (se puede hacer
+  desde x86: el Dockerfile es solo COPY). Salen ~78 MB comprimidos.
+- La app la carga con `docker load` desde la pantalla de preparar el motor, y
+  luego levanta el contenedor con `--privileged` (el wrapper hace chroot,
+  unshare de PID y monta /proc) publicando los puertos **solo en 127.0.0.1**.
+- **La sesión vive en el host**, en un volumen montado sobre `/app/rootfs/data`.
+  Por eso se puede saber si hay sesión antes de encender nada, el 2FA se entrega
+  escribiendo el archivo desde el host, y borrar el contenedor no la pierde.
+- La sesión es **portable entre arquitecturas**: es sqlite de la cuenta, no
+  código. La misma que usa el bot en x86-64 vale tal cual aquí.
+
+Verificado de punta a punta (emulado en la VPS con `qemu-user-static`): el
+contenedor arranca con la sesión montada, cachea la cuenta y llega a los tres
+`listening` (10020, 20020, 30020); el 30020 publicado devuelve el JSON de la
+cuenta con su `dev_token`.
+
+Único requisito para el usuario: tener **Docker Desktop o Colima** instalado y
+arrancado. En Windows no hace falta nada porque WSL viene con el sistema; en
+macOS no hay Linux integrado, así que o se instala un runtime de contenedores o
+habría que empaquetar una VM propia con Virtualization.framework.
 
 **El puerto 10020 no lleva cifrado ni autenticación.** Por él viajan las llaves
 de FairPlay y el audio en claro, así que **no se expone a internet**: se saca por

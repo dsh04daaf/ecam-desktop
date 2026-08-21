@@ -651,9 +651,27 @@ $('wv-load').addEventListener('click', async (e) => {
   }
 });
 
+// La pantalla de preparar el motor no dice lo mismo en Windows que en Mac: en
+// uno se importa una distro de WSL y en el otro se carga una imagen de Docker.
+// Enseñar el texto de WSL en un Mac manda a buscar algo que no existe.
+function renderInstall(state) {
+  const docker = state.backend === 'docker';
+  // Se cambia la CLAVE, no el texto: si solo se pusiera el texto, el primer
+  // cambio de idioma lo pisaría con el de WSL, porque applyLanguage repinta
+  // todo lo que lleva data-t.
+  $('install-lead').dataset.t = docker ? 'install_lead_docker' : 'install_lead';
+  $('btn-install').dataset.t = docker ? 'install_go_docker' : 'install_go';
+  applyLanguage();
+  // Sin Docker arrancado no hay nada que cargar: el botón solo daría un error
+  // críptico de `docker load`.
+  const bloqueado = docker && !state.docker_ready;
+  $('btn-install').disabled = bloqueado;
+  $('install-hint').textContent = bloqueado ? t('docker_missing') : '';
+}
+
 $('btn-install').addEventListener('click', async () => {
   const file = await window.__TAURI__.dialog.open({
-    filters: [{ name: 'ECAM', extensions: ['gz', 'tar.gz'] }],
+    filters: [{ name: 'ECAM', extensions: ['tar', 'gz', 'tar.gz'] }],
   });
   if (!file) return;
   $('install-hint').textContent = t('loading');
@@ -722,6 +740,7 @@ async function refresh() {
   }
   const state = await ecam.wrapperState();
   const next = ecam.screenFor(state);
+  if (next === 'install') renderInstall(state);
   if (next === 'connect') {
     // Se rellena con lo que ya haya para no obligar a teclearlo cada vez.
     try { $('connect-addr').value = (await ecam.getConfig())['decrypt-port'] || ''; } catch { /* sin core */ }

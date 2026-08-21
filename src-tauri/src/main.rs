@@ -51,6 +51,9 @@ struct WrapperState {
     /// desde aquí, y enseñar esas pantallas es mandar al usuario a un botón
     /// que no hace nada.
     backend: &'static str,
+    /// Solo mira a Docker: distingue «falta la imagen» de «no hay Docker», que
+    /// se arreglan de formas muy distintas.
+    docker_ready: bool,
     distro_installed: bool,
     has_session: bool,
     listening: bool,
@@ -65,6 +68,7 @@ async fn wrapper_state(state: State<'_, AppState>) -> Result<WrapperState, Strin
     let listening = Wrapper::probe(&port);
     Ok(WrapperState {
         backend: rt.backend.kind(),
+        docker_ready: rt.docker_ready().await,
         distro_installed: rt.distro_installed().await,
         has_session: rt.has_session().await,
         listening,
