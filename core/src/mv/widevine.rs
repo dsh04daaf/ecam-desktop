@@ -175,23 +175,37 @@ pub struct Cdm {
 /// se saca con `strings` y no se puede rotar sin recompilar). Para el usuario es
 /// transparente: el instalador la deja en `resources/` y aquí se encuentra sola.
 fn candidates(name: &str) -> Vec<std::path::PathBuf> {
-    let mut out = vec![Config::config_dir().join("widevine").join(name)];
+    candidates_in("widevine", name)
+}
+
+/// Los mismos tres sitios de siempre, pero bajo la subcarpeta que se pida:
+/// `widevine/` para el CDM de Widevine y `playready/` para el `.prd` de SL3000.
+pub(crate) fn candidates_in(subdir: &str, name: &str) -> Vec<std::path::PathBuf> {
+    let mut out = vec![Config::config_dir().join(subdir).join(name)];
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            out.push(dir.join("resources").join("widevine").join(name));
-            out.push(dir.join("widevine").join(name));
+            out.push(dir.join("resources").join(subdir).join(name));
+            out.push(dir.join(subdir).join(name));
         }
     }
     out
 }
 
-fn find_credential(explicit: Option<&std::path::PathBuf>, name: &str) -> Option<std::path::PathBuf> {
+pub(crate) fn find_credential(explicit: Option<&std::path::PathBuf>, name: &str) -> Option<std::path::PathBuf> {
+    find_credential_in("widevine", explicit, name)
+}
+
+pub(crate) fn find_credential_in(
+    subdir: &str,
+    explicit: Option<&std::path::PathBuf>,
+    name: &str,
+) -> Option<std::path::PathBuf> {
     if let Some(p) = explicit {
         if p.exists() {
             return Some(p.clone());
         }
     }
-    candidates(name).into_iter().find(|p| p.exists())
+    candidates_in(subdir, name).into_iter().find(|p| p.exists())
 }
 
 /// Carga las credenciales del dispositivo.

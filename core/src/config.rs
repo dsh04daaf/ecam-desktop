@@ -82,6 +82,10 @@ pub struct Config {
     pub widevine_device_key: Option<PathBuf>,
     /// Blob del ClientId de Widevine (base64), por el mismo motivo.
     pub widevine_client_id: Option<PathBuf>,
+    /// Dispositivo PlayReady SL3000 (`.prd`), también fuera del binario.
+    /// Sólo hace falta para las variantes de 1440p y 4K: desde el 2026-09-10
+    /// Apple las sirve únicamente por PlayReady SL3000. Sin él, el resto va igual.
+    pub mv_playready_device: Option<PathBuf>,
 
     /// De dónde se cargó. No se serializa: es para poder reescribir el archivo
     /// cuando el core detecta algo que el usuario no tuvo que teclear.
@@ -118,6 +122,7 @@ impl Default for Config {
             ffmpeg_path: "ffmpeg".into(),
             widevine_device_key: None,
             widevine_client_id: None,
+            mv_playready_device: None,
             source_path: None,
         }
     }
