@@ -10,7 +10,7 @@ use crate::amp::{http, wrapper_music_token, Amp, UA};
 use crate::config::{Config, Quality};
 use crate::error::{Error, Result, TrackError};
 use crate::mp4::{self, assemble::SampleTables, frag, init::TencInfo};
-use crate::wrapper::Wrapper;
+use crate::wrapper::{KeyedDecryptor, Wrapper};
 use serde_json::Value;
 use std::io::{BufReader, BufWriter, Seek, Write};
 use std::path::{Path, PathBuf};
@@ -190,6 +190,8 @@ pub async fn download_track(
     // ── 3. Descifrar y montar (bloqueante: el wrapper es secuencial) ────────
     let key_uris: Vec<Option<String>> = segments.iter().map(|s| s.key_uri.clone()).collect();
     let decrypt_port = cfg.decrypt_port.clone();
+    let motor = cfg.decrypt_engine.to_ascii_lowercase();
+    let key_port = cfg.key_port;
     let adam_id = job.adam_id.clone();
     let out_path_c = out_path.clone();
     let progress_c = progress.clone();
@@ -197,10 +199,42 @@ pub async fn download_track(
     let dir = tmp_dir.clone();
     let final_dir = job.output_dir.clone();
 
+    // Con el motor temari las plantillas se piden AQUI, en async, antes de
+    // entrar al hilo bloqueante: los URI de llave ya se conocen (vienen del
+    // m3u8), asi que no hace falta HTTP bloqueante dentro de spawn_blocking.
+    // "auto" mira si el wrapper instalado tiene key server. Hace falta porque la
+    // app se distribuye y el usuario puede arrastrar una distro vieja sin el
+    // puerto 40020: forzar temari ahi dejaria la app inservible.
+    let usar_temari = match motor.as_str() {
+        "wrapper" => false,
+        "temari" => true,
+        _ => crate::temari::TemariDecrypter::probe(&decrypt_port, key_port).await,
+    };
+    if motor != "wrapper" && !usar_temari {
+        tracing::info!(
+            "el wrapper no expone key server en {key_port}: se descifra por el camino antiguo"
+        );
+    }
+    let mut temari_pre = if usar_temari {
+        Some(
+            crate::temari::TemariDecrypter::prepare(&decrypt_port, key_port, &adam_id, &key_uris)
+                .await?,
+        )
+    } else {
+        None
+    };
+
     tokio::task::spawn_blocking(move || -> Result<()> {
-        let mut wrapper = Wrapper::connect(&decrypt_port)?;
+        let mut wrapper_conn;
+        let dec: &mut dyn KeyedDecryptor = match temari_pre.as_mut() {
+            Some(t) => t,
+            None => {
+                wrapper_conn = Wrapper::connect(&decrypt_port)?;
+                &mut wrapper_conn
+            }
+        };
         decrypt_to_file(
-            enc_file.path(), &out_path_c, &dir, &final_dir, &mut wrapper, &adam_id, &key_uris,
+            enc_file.path(), &out_path_c, &dir, &final_dir, dec, &adam_id, &key_uris,
             total_segments, progress_c,
         )
     })
@@ -285,7 +319,7 @@ fn decrypt_to_file(
     out_path: &Path,
     tmp_dir: &Path,
     final_dir: &Path,
-    wrapper: &mut Wrapper,
+    wrapper: &mut dyn KeyedDecryptor,
     adam_id: &str,
     key_uris: &[Option<String>],
     total_fragments: usize,

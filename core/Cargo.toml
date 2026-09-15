@@ -30,6 +30,9 @@ sha1         = "0.10"
 rand         = "0.8"
 p256 = { version = "0.14.0", features = ["ecdsa", "arithmetic"] }
 sha2 = "0.11.0"
+# Motor de descifrado FairPlay (MIT). Con decrypt-engine "temari" el audio se
+# descifra en este proceso y el wrapper solo entrega la plantilla de la llave.
+temari = "0.3"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }

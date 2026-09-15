@@ -207,7 +207,9 @@ pub fn decrypt_fragment(
     moof_raw: &[u8],
     mdat_payload: &[u8],
     tenc: &super::init::TencInfo,
-    dec: &mut impl Decryptor,
+    // `?Sized` para poder pasar un `&mut dyn Decryptor`: el motor se elige en
+    // tiempo de ejecución (wrapper por TCP o Temari en proceso).
+    dec: &mut (impl Decryptor + ?Sized),
     trex_default_duration: u32,
 ) -> Result<Fragment> {
     let moof_payload = &moof_raw[8.min(moof_raw.len())..];
