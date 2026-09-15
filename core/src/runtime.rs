@@ -7,7 +7,8 @@
 
 use crate::error::{Error, Result};
 use serde::Serialize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::mpsc;
 
@@ -68,6 +69,49 @@ impl Backend {
             Backend::Docker { .. } => "docker",
         }
     }
+}
+
+/// Sitios donde puede estar el CLI de Docker, en orden de preferencia.
+///
+/// Hace falta porque una app de macOS abierta desde el Finder **no hereda el
+/// PATH del shell**: launchd le da `/usr/bin:/bin:/usr/sbin:/sbin`, y ahí no
+/// está ni Docker Desktop (`/usr/local/bin`, `~/.docker/bin`) ni Homebrew/Colima
+/// (`/opt/homebrew/bin`). Con el motor encendido y todo, `Command::new("docker")`
+/// fallaba con «no such file» y la app lo enseñaba como «Docker no responde».
+fn docker_candidates() -> Vec<PathBuf> {
+    let mut v = Vec::new();
+    // Docker Desktop ofrece instalar el CLI en el home del usuario; si está,
+    // es el que corresponde a la versión que se está ejecutando.
+    if let Some(home) = std::env::var_os("HOME") {
+        v.push(PathBuf::from(home).join(".docker").join("bin").join("docker"));
+    }
+    v.extend([
+        PathBuf::from("/usr/local/bin/docker"),
+        PathBuf::from("/opt/homebrew/bin/docker"),
+        PathBuf::from("/Applications/Docker.app/Contents/Resources/bin/docker"),
+        PathBuf::from("/usr/bin/docker"),
+    ]);
+    v
+}
+
+/// El primero de la lista que exista; si no hay ninguno, se deja `docker` a
+/// secas para que lo resuelva el PATH (Linux, o la app lanzada desde una
+/// terminal) y el error que salga sea el de Docker, no el de una ruta inventada.
+fn pick_docker_bin(candidates: &[PathBuf], exists: impl Fn(&Path) -> bool) -> PathBuf {
+    candidates
+        .iter()
+        .find(|p| exists(p))
+        .cloned()
+        .unwrap_or_else(|| PathBuf::from("docker"))
+}
+
+/// Ruta al CLI de Docker, resuelta una sola vez. `ECAM_DOCKER` la fuerza.
+fn docker_bin() -> &'static Path {
+    static BIN: OnceLock<PathBuf> = OnceLock::new();
+    BIN.get_or_init(|| match std::env::var_os("ECAM_DOCKER") {
+        Some(p) => PathBuf::from(p),
+        None => pick_docker_bin(&docker_candidates(), |p| p.is_file()),
+    })
 }
 
 /// Dónde guarda el host la carpeta que se monta dentro del contenedor.
@@ -207,7 +251,7 @@ impl Runtime {
             // `--privileged` no es opcional: el wrapper hace chroot, unshare de
             // PID y monta /proc.
             Backend::Docker { image, container, data_dir } => (
-                "docker".into(),
+                docker_bin().display().to_string(),
                 vec![
                     "run".into(),
                     "--rm".into(),
@@ -240,7 +284,7 @@ impl Runtime {
     /// `docker run --name` falle en seco. Se limpia antes de cada arranque.
     async fn drop_stale_container(&self) {
         let Backend::Docker { container, .. } = &self.backend else { return };
-        let mut cmd = tokio::process::Command::new("docker");
+        let mut cmd = tokio::process::Command::new(docker_bin());
         cmd.args(["rm", "-f", container])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
@@ -257,7 +301,7 @@ impl Runtime {
             ),
             Backend::Local { .. } => ("/bin/sh".to_string(), vec!["-c".to_string()]),
             Backend::Docker { container, .. } => (
-                "docker".to_string(),
+                docker_bin().display().to_string(),
                 vec!["exec".into(), container.clone(), "/bin/sh".into(), "-c".into()],
             ),
             Backend::External => return Ok(false),
@@ -289,7 +333,7 @@ impl Runtime {
             // instalado o no está arrancado, esto también sale false y la app
             // manda a la pantalla de preparar el motor, que es donde se explica.
             Backend::Docker { image, .. } => {
-                let mut cmd = tokio::process::Command::new("docker");
+                let mut cmd = tokio::process::Command::new(docker_bin());
                 cmd.args(["image", "inspect", image])
                     .stdout(std::process::Stdio::null())
                     .stderr(std::process::Stdio::null());
@@ -306,7 +350,7 @@ impl Runtime {
         if !matches!(self.backend, Backend::Docker { .. }) {
             return true;
         }
-        let mut cmd = tokio::process::Command::new("docker");
+        let mut cmd = tokio::process::Command::new(docker_bin());
         cmd.args(["info", "--format", "{{.ServerVersion}}"])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
@@ -327,7 +371,7 @@ impl Runtime {
             // Docker la crea él como root y luego la app no puede escribir el
             // 2fa.txt dentro.
             tokio::fs::create_dir_all(data_dir.join(DATA_SUBPATH)).await?;
-            let mut cmd = tokio::process::Command::new("docker");
+            let mut cmd = tokio::process::Command::new(docker_bin());
             cmd.arg("load").arg("-i").arg(tarball);
             no_console(&mut cmd);
             let out = cmd.output().await?;
@@ -488,7 +532,15 @@ mod tests {
     #[test]
     fn docker_publica_los_puertos_solo_en_localhost() {
         let (prog, args) = docker_backend().launch_command(None);
-        assert_eq!(prog, "docker");
+        // El nombre del binario, no la ruta: docker_bin() devuelve una ruta
+        // absoluta cuando encuentra el CLI (lo normal en macOS, donde el PATH de
+        // launchd no lo incluye) y "docker" pelado cuando no. Atar la prueba a
+        // "docker" exacto la hacia depender del sistema donde se ejecuta.
+        assert_eq!(
+            std::path::Path::new(&prog).file_name().and_then(|s| s.to_str()),
+            Some("docker"),
+            "programa inesperado: {prog}"
+        );
         let publicados: Vec<&String> = args
             .iter()
             .enumerate()
@@ -501,6 +553,35 @@ mod tests {
             // esto se publica en 0.0.0.0, queda abierto a toda la red.
             assert!(p.starts_with("127.0.0.1:"), "puerto abierto a la red: {p}");
         }
+    }
+
+    #[test]
+    fn elige_el_primer_docker_que_existe() {
+        let c = vec![
+            PathBuf::from("/home/x/.docker/bin/docker"),
+            PathBuf::from("/usr/local/bin/docker"),
+            PathBuf::from("/opt/homebrew/bin/docker"),
+        ];
+        // Solo existe el de Homebrew (caso tipico de Colima en Apple Silicon).
+        let elegido = pick_docker_bin(&c, |p| p.ends_with("opt/homebrew/bin/docker"));
+        assert_eq!(elegido, PathBuf::from("/opt/homebrew/bin/docker"));
+    }
+
+    #[test]
+    fn respeta_el_orden_de_preferencia() {
+        let c = docker_candidates();
+        // Si existen varios, gana el primero de la lista.
+        let elegido = pick_docker_bin(&c, |_| true);
+        assert_eq!(elegido, c[0], "no respeto el orden de preferencia");
+    }
+
+    #[test]
+    fn sin_ningun_docker_cae_a_resolver_por_path() {
+        // En Linux, o con la app lanzada desde una terminal, el PATH ya sirve:
+        // se deja "docker" pelado para que el error que salga sea el de Docker
+        // y no el de una ruta inventada.
+        let elegido = pick_docker_bin(&docker_candidates(), |_| false);
+        assert_eq!(elegido, PathBuf::from("docker"));
     }
 
     #[test]
