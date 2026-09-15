@@ -53,6 +53,17 @@ pub struct Config {
 
     /// `host:puerto` del wrapper. En Windows apunta al WSL vía localhost.
     pub decrypt_port: String,
+    /// Motor de descifrado:
+    /// - `"auto"` (por defecto): usa Temari si el wrapper instalado tiene key
+    ///   server, y si no cae al wrapper. Es lo correcto en una app distribuida,
+    ///   donde el usuario puede arrastrar una imagen vieja sin el puerto 40020.
+    /// - `"temari"`: fuerza el motor local; falla si no hay key server.
+    /// - `"wrapper"`: fuerza el camino antiguo (todo el audio por TCP).
+    #[serde(default = "motor_por_defecto")]
+    pub decrypt_engine: String,
+    /// Puerto del key server del wrapper. Solo lo usa el motor `temari`.
+    #[serde(default = "key_port_por_defecto")]
+    pub key_port: u16,
 
     pub output_dir: PathBuf,
     pub cover_size: String,
@@ -102,6 +113,8 @@ impl Default for Config {
             mv_max: 2160,
             mv_audio_type: "atmos".into(),
             decrypt_port: "127.0.0.1:10020".into(),
+            decrypt_engine: motor_por_defecto(),
+            key_port: key_port_por_defecto(),
             output_dir: default_output_dir(),
             cover_size: "1200x1200".into(),
             save_cover: true,
@@ -274,4 +287,12 @@ mod tests {
         let nuevo = cfg.merge_patch(&patch).unwrap();
         assert_eq!(nuevo.language, "en-GB");
     }
+}
+
+fn motor_por_defecto() -> String {
+    "auto".into()
+}
+
+fn key_port_por_defecto() -> u16 {
+    40020
 }

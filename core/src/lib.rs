@@ -24,6 +24,7 @@ pub mod preview;
 pub mod recovery;
 pub mod runtime;
 pub mod tags;
+pub mod temari;
 pub mod track;
 pub mod wrapper;
 

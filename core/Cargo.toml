@@ -28,6 +28,9 @@ cmac         = "0.7"
 rsa          = "0.9"
 sha1         = "0.10"
 rand         = "0.8"
+# Motor de descifrado FairPlay (MIT). Con decrypt-engine "temari" el audio se
+# descifra en este proceso y el wrapper solo entrega la plantilla de la llave.
+temari       = "0.3"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
