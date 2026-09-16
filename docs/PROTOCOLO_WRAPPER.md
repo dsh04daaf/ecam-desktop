@@ -65,7 +65,12 @@ El mismo proceso que loguea es el que queda sirviendo: no hay dos arranques.
   WSL2 reenvía localhost solo si el wrapper bindea `0.0.0.0`)
 - caída a media descarga → relanzar sin re-login y reintentar el track
 - cierre de la app → matar el hijo + `wsl --terminate ECAM` (no dejar la VM comiendo RAM)
-- "cerrar sesión" = borrar `kvs.sqlitedb`
+- "cerrar sesión" = borrar `kvs.sqlitedb` **junto con** `kvs.sqlitedb-wal` y `-shm` (la base va
+  en modo WAL; un `-wal` huérfano se reaplica sobre la base nueva)
+- **No hace falta volcar el WAL tras el login** (`PRAGMA wal_checkpoint`): el wrapper lo lee al
+  arrancar. Verificado 2026-09-16 con una sesión que existía SOLO en el WAL.
+- `Invalid CKC` = Apple niega la licencia de **una pista** (catálogo viejo con llave `afs_`, o sin
+  licencia en el país de la cuenta). **No** es sesión muerta: no relanzar ni pedir login.
 
 ## 6. Pendiente de verificar en Windows real
 

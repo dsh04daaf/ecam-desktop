@@ -79,10 +79,9 @@ impl TemariDecrypter {
                 .await
                 .map_err(|e| muerto(format!("el key server no responde: {e}")))?;
             if !resp.status().is_success() {
-                return Err(muerto(format!(
-                    "el key server devolvió {} para {id}",
-                    resp.status()
-                )));
+                let status = resp.status().as_u16();
+                let cuerpo = resp.text().await.unwrap_or_default();
+                return Err(error_del_key_server(status, &cuerpo, id));
             }
             let cuerpo = resp
                 .text()
@@ -164,6 +163,26 @@ fn muerto(msg: String) -> Error {
     Error::Track(TrackError::wrapper_dead(msg))
 }
 
+/// Traduce una respuesta de error del key server.
+///
+/// ecwrapper >= 1.3 contesta `502 {"error": "Invalid CKC error."}` cuando Apple
+/// niega la licencia de ESA pista (sin licencia en el país de la cuenta, o un
+/// rechazo puntual). Eso no es sesión muerta: el key server sigue vivo y la
+/// pista siguiente se sirve bien, así que relanzar el wrapper no arregla nada.
+/// Cualquier otro error sí se trata como antes.
+fn error_del_key_server(status: u16, cuerpo: &str, id: &str) -> Error {
+    let detalle = serde_json::from_str::<serde_json::Value>(cuerpo)
+        .ok()
+        .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(|s| s.trim().to_string()));
+    match detalle {
+        Some(d) if d.contains("Invalid CKC") => Error::Track(TrackError::unavailable(format!(
+            "Apple no licencia esta pista a la cuenta ({d})"
+        ))),
+        Some(d) => muerto(format!("el key server devolvió {status} para {id}: {d}")),
+        None => muerto(format!("el key server devolvió {status} para {id}")),
+    }
+}
+
 /// Codifica lo justo para una query: los URI de llave llevan `:` y `/`.
 fn urlencode(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 8);
@@ -181,6 +200,19 @@ fn urlencode(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn invalid_ckc_es_de_la_pista_y_no_de_la_sesion() {
+        use crate::recovery::{classify, Action};
+        let e = error_del_key_server(502, r#"{"error":"Invalid CKC error. ","code":"502"}"#, "1568409528");
+        assert_eq!(classify(&e), Action::GiveUp);
+        // Un error sin cuerpo reconocible sigue siendo sesión caída.
+        assert_eq!(classify(&error_del_key_server(500, "", "1")), Action::RestartWrapperAndRetry);
+        assert_eq!(
+            classify(&error_del_key_server(500, r#"{"error":"key retrieval failed"}"#, "1")),
+            Action::RestartWrapperAndRetry
+        );
+    }
 
     #[test]
     fn codifica_los_uri_de_llave() {

@@ -34,9 +34,11 @@ pub fn backoff(attempt: u32) -> Duration {
 ///
 /// Sale de `WRAPPER_FATAL_ERRORS` del bot más el -42786, que es el que aparece
 /// cuando la licencia caduca a media descarga.
+///
+/// "Invalid CKC" no cuenta: es Apple negando la licencia de UNA pista. Medido en
+/// el bot (2026-09-16): la pista siguiente se sirve bien sin relanzar nada.
 pub const SESSION_DEAD_MARKERS: &[&str] = &[
     "-42786",
-    "Invalid CKC",
     "catched an exception",
     "Error connecting to device",
     "Error reading response from device",
@@ -44,6 +46,9 @@ pub const SESSION_DEAD_MARKERS: &[&str] = &[
 ];
 
 pub fn looks_session_dead(text: &str) -> bool {
+    if text.contains("Invalid CKC") && !text.contains("-42786") {
+        return false;
+    }
     SESSION_DEAD_MARKERS.iter().any(|m| text.contains(m))
 }
 
@@ -95,7 +100,8 @@ mod tests {
     #[test]
     fn el_42786_se_reconoce_venga_donde_venga() {
         assert!(looks_session_dead("[!] auth error: code=-42786"));
-        assert!(looks_session_dead("KDCanProcessCKC Invalid CKC"));
+        assert!(looks_session_dead("KDCanProcessCKC status: -42786"));
+        assert!(!looks_session_dead("[!] catched an exception: Invalid CKC error. "));
         assert!(!looks_session_dead("[!] listening 0.0.0.0:10020"));
         let e = Error::Track(TrackError::failed("falló algo con -42786 dentro"));
         assert_eq!(classify(&e), Action::RestartWrapperAndRetry);

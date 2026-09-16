@@ -147,6 +147,19 @@ pub async fn download_track(
         (segs, label)
     };
 
+    // Llave FairPlay de formato antiguo (skd://itunes.apple.com/afs_...): la traen
+    // las pistas de catálogo viejo que caen al respaldo de webPlayback. El key
+    // server de Apple las rechaza SIEMPRE con "Invalid CKC error", así que ni se
+    // baja el audio ni se pide la llave: no tiene arreglo.
+    if segments
+        .iter()
+        .any(|s| s.key_uri.as_deref().is_some_and(|u| u.contains("://itunes.apple.com/afs_")))
+    {
+        return Err(Error::Track(TrackError::unavailable(
+            "pista antigua (llave afs_): Apple no deja descifrarla",
+        )));
+    }
+
     let t_download = std::time::Instant::now();
     // ── 2. Bajar los segmentos a un temporal ───────────────────────────────
     // Los temporales van a una carpeta propia, NO a la del usuario: ver un

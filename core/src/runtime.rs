@@ -229,8 +229,16 @@ impl Runtime {
     }
 
     /// Cierra la sesión borrando la base de cuentas.
+    ///
+    /// Con su `-wal` y su `-shm`: la base está en modo WAL y lo último escrito
+    /// (el login) vive en el `-wal` hasta que SQLite lo vuelca. Borrar solo el
+    /// `.sqlitedb` deja ese WAL huérfano, y al crear la base nueva SQLite lo
+    /// reaplica encima: resucita datos de la sesión cerrada.
     pub async fn sign_out(&self) -> Result<()> {
-        self.run_in_distro(&format!("rm -f {DATA_DIR}/mpl_db/kvs.sqlitedb")).await?;
+        self.run_in_distro(&format!(
+            "rm -f {DATA_DIR}/mpl_db/kvs.sqlitedb {DATA_DIR}/mpl_db/kvs.sqlitedb-wal {DATA_DIR}/mpl_db/kvs.sqlitedb-shm"
+        ))
+        .await?;
         Ok(())
     }
 
@@ -328,7 +336,15 @@ mod tests {
             parse_line("[!] listening m3u8 request on 0.0.0.0:20020"),
             Event::Listening(20020)
         );
-        assert_eq!(parse_line("[!] Invalid CKC error"), Event::SessionDead("[!] Invalid CKC error".into()));
+        assert_eq!(
+            parse_line("[!] catched an exception: Fairplay error. KDCanProcessCKC status: -42786"),
+            Event::SessionDead("[!] catched an exception: Fairplay error. KDCanProcessCKC status: -42786".into())
+        );
+        // Invalid CKC es de una pista, no de la sesión: solo se registra.
+        assert_eq!(
+            parse_line("[!] key request exception: Invalid CKC error."),
+            Event::Log("[!] key request exception: Invalid CKC error.".into())
+        );
     }
 
     #[test]
