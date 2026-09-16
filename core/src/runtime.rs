@@ -418,17 +418,29 @@ impl Runtime {
     }
 
     /// Cierra la sesión borrando la base de cuentas.
+    ///
+    /// Con su `-wal` y su `-shm`: la base está en modo WAL y lo último escrito
+    /// (el login) vive en el `-wal` hasta que SQLite lo vuelca. Borrar solo el
+    /// `.sqlitedb` deja ese WAL huérfano, y al crear la base nueva SQLite lo
+    /// reaplica encima: resucita datos de la sesión cerrada.
     pub async fn sign_out(&self) -> Result<()> {
         if let Some(db) = self.host_data_file("mpl_db/kvs.sqlitedb") {
             self.drop_stale_container().await;
-            // Que no exista ya no es un error: es justo lo que se buscaba.
-            match tokio::fs::remove_file(&db).await {
-                Ok(()) => return Ok(()),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-                Err(e) => return Err(e.into()),
+            // Los tres juntos. Que no exista ya no es un error: es justo lo que se buscaba.
+            for sufijo in ["", "-wal", "-shm"] {
+                let f = std::path::PathBuf::from(format!("{}{sufijo}", db.display()));
+                match tokio::fs::remove_file(&f).await {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => return Err(e.into()),
+                }
             }
+            return Ok(());
         }
-        self.run_in_distro(&format!("rm -f {DATA_DIR}/mpl_db/kvs.sqlitedb")).await?;
+        self.run_in_distro(&format!(
+            "rm -f {DATA_DIR}/mpl_db/kvs.sqlitedb {DATA_DIR}/mpl_db/kvs.sqlitedb-wal {DATA_DIR}/mpl_db/kvs.sqlitedb-shm"
+        ))
+        .await?;
         Ok(())
     }
 
@@ -650,7 +662,15 @@ mod tests {
             parse_line("[!] listening m3u8 request on 0.0.0.0:20020"),
             Event::Listening(20020)
         );
-        assert_eq!(parse_line("[!] Invalid CKC error"), Event::SessionDead("[!] Invalid CKC error".into()));
+        assert_eq!(
+            parse_line("[!] catched an exception: Fairplay error. KDCanProcessCKC status: -42786"),
+            Event::SessionDead("[!] catched an exception: Fairplay error. KDCanProcessCKC status: -42786".into())
+        );
+        // Invalid CKC es de una pista, no de la sesión: solo se registra.
+        assert_eq!(
+            parse_line("[!] key request exception: Invalid CKC error."),
+            Event::Log("[!] key request exception: Invalid CKC error.".into())
+        );
     }
 
     #[test]

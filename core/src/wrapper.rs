@@ -228,8 +228,11 @@ impl Drop for Wrapper {
 
 /// Errores del log del wrapper que significan **sesión muerta**. Reintentar el
 /// track con estos no sirve de nada: hay que relanzar el proceso.
+///
+/// "Invalid CKC" NO está: es Apple negando la licencia de UNA pista (sin licencia
+/// en el país de la cuenta, o llave antigua `afs_`). El wrapper viejo lo loguea
+/// como "catched an exception: Invalid CKC error.", por eso se excluye aparte.
 pub const FATAL_ERRORS: &[&str] = &[
-    "Invalid CKC",
     "catched an exception",
     "Error connecting to device",
     "Error reading response from device",
@@ -238,6 +241,9 @@ pub const FATAL_ERRORS: &[&str] = &[
 ];
 
 pub fn is_fatal_log(line: &str) -> bool {
+    if line.contains("Invalid CKC") && !line.contains("-42786") {
+        return false;
+    }
     FATAL_ERRORS.iter().any(|e| line.contains(e))
 }
 
@@ -247,8 +253,11 @@ mod tests {
 
     #[test]
     fn reconoce_los_errores_que_matan_la_sesion() {
-        assert!(is_fatal_log("[!] Invalid CKC error"));
+        assert!(is_fatal_log("[!] catched an exception: Fairplay error. KDCanProcessCKC status: -42786"));
         assert!(is_fatal_log("code=-42786"));
+        // Una pista sin licencia no es sesión muerta, venga del wrapper viejo o del key server.
+        assert!(!is_fatal_log("[!] catched an exception: Invalid CKC error. "));
+        assert!(!is_fatal_log("[!] key request exception: Invalid CKC error. "));
         assert!(!is_fatal_log("[+] listening 0.0.0.0:10020"));
     }
 }
