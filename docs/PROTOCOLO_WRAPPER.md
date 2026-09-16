@@ -19,6 +19,7 @@ Fuente: `/srv/bots/apple/wrapper_wol` (WOL, commit 0d4823d + fix DNS nuestro).
 | Carga útil | `/app/wrapper`, `/app/rootfs/system` (Android), `/app/rootfs/data` (sesión) |
 | Tamaño | **49 MB** comprimido / 120 MB en disco (la imagen Docker completa serían 94 MB) |
 | Import | `wsl --import ECAM %LOCALAPPDATA%\ECAM\distro rootfs.tar.gz --version 2` |
+| Distro | `ecam-rootfs-slim.tar.gz` del release `distro-ecwrapper-1.3` (ecwrapper 1.3, con key server). Receta en `docs/make-rootfs.sh` |
 
 `wsl.conf` incluido: automount off, interop off, `generateResolvConf=true` (hace falta DNS),
 usuario por defecto root (el wrapper necesita CAP_SYS_ADMIN para el `mount`).

@@ -1,5 +1,12 @@
 #!/bin/sh
 # Ensambla el rootfs minimo para WSL: busybox + glibc + wrapper + libs Android.
+#
+# Se corre DENTRO de la imagen de ecwrapper (trae /app/wrapper y /app/rootfs):
+#   docker run --rm -v "$PWD/out":/out -v "$PWD/docs/make-rootfs.sh":/make-rootfs.sh:ro \
+#     --entrypoint /bin/sh ecwrapper:1.3 /make-rootfs.sh
+#   tar --numeric-owner -czf ecam-rootfs-slim.tar.gz -C out .
+# Publicado: release distro-ecwrapper-1.3 (50,9 MB). Rehacerlo con cada version de
+# ecwrapper que cambie el binario.
 set -e
 OUT=/out
 rm -rf $OUT/* 2>/dev/null || true
