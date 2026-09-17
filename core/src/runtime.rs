@@ -14,6 +14,14 @@ use tokio::sync::mpsc;
 /// Ruta dentro de la distro donde vive la sesión.
 const DATA_DIR: &str = "/app/rootfs/data/data/com.apple.android.music/files";
 
+/// Dónde puede estar la base de la sesión, **relativa a `files/`**.
+///
+/// Son dos porque los dos builds del wrapper no coinciden: el x86 de la distro
+/// la mete en `mpl_db/` y el arm64 que usa la versión de macOS deja el mismo
+/// juego de bases al nivel de `files/`. Aquí manda el x86, pero mirar solo una
+/// ruta es justo el fallo que dejó la versión de Mac pidiendo login en bucle.
+const SESSION_DB_PATHS: [&str; 2] = ["mpl_db/kvs.sqlitedb", "kvs.sqlitedb"];
+
 /// Dónde corre el wrapper.
 #[derive(Debug, Clone)]
 pub enum Backend {
@@ -270,10 +278,14 @@ impl Runtime {
     pub async fn has_session(&self) -> bool {
         match self.backend {
             Backend::External => crate::wrapper::Wrapper::probe(&self.decrypt_port),
-            _ => self
-                .run_in_distro(&format!("[ -f {DATA_DIR}/mpl_db/kvs.sqlitedb ]"))
-                .await
-                .unwrap_or(false),
+            _ => {
+                let prueba = SESSION_DB_PATHS
+                    .iter()
+                    .map(|r| format!("[ -f {DATA_DIR}/{r} ]"))
+                    .collect::<Vec<_>>()
+                    .join(" || ");
+                self.run_in_distro(&prueba).await.unwrap_or(false)
+            }
         }
     }
 
@@ -284,10 +296,12 @@ impl Runtime {
     /// `.sqlitedb` deja ese WAL huérfano, y al crear la base nueva SQLite lo
     /// reaplica encima: resucita datos de la sesión cerrada.
     pub async fn sign_out(&self) -> Result<()> {
-        self.run_in_distro(&format!(
-            "rm -f {DATA_DIR}/mpl_db/kvs.sqlitedb {DATA_DIR}/mpl_db/kvs.sqlitedb-wal {DATA_DIR}/mpl_db/kvs.sqlitedb-shm"
-        ))
-        .await?;
+        let borrar = SESSION_DB_PATHS
+            .iter()
+            .flat_map(|r| ["", "-wal", "-shm"].map(move |s| format!("{DATA_DIR}/{r}{s}")))
+            .collect::<Vec<_>>()
+            .join(" ");
+        self.run_in_distro(&format!("rm -f {borrar}")).await?;
         Ok(())
     }
 
