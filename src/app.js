@@ -109,6 +109,9 @@ ecam.listen('progress', (p) => {
 ecam.listen('track', (tr) => {
   // Sesión muerta: el core ya la relanza y reintenta solo; aquí solo se informa.
   if (tr.fatal) addRow('⟳ ' + tr.detail, false);
+  // Omitida = el catálogo ya decía que no existe (fuera de la tienda o sin esa
+  // versión). No es un error: se pinta neutra, sin ✗.
+  if (tr.skipped) return addRow(`↷ ${tr.detail}`, true);
   addRow(tr.ok ? `✓ ${tr.name} — ${tr.detail}` : `✗ ${tr.detail}`, tr.ok);
 });
 
@@ -117,7 +120,7 @@ ecam.listen('finished', (f) => {
   if (li) li.remove();
   rows.delete(f.job);
   if (f.cancelled) addRow(`${t('cancelled')} (${f.done || 0})`, false);
-  else if (f.ok) addRow(`${t('done')}: ${f.done}${f.failed ? ` · ${f.failed} ✗` : ''}`);
+  else if (f.ok) addRow(`${t('done')}: ${f.done}${f.failed ? ` · ${f.failed} ✗` : ''}${f.skipped ? ` · ${f.skipped} ${t('skipped')}` : ''}`);
   else addRow(`${t('failed')}: ${f.error}`, false);
   renderHistory();
 });
@@ -140,11 +143,16 @@ async function renderHistory() {
     const when = new Date(e.at * 1000).toLocaleString();
     const resumen = e.cancelled
       ? t('cancelled')
-      : `${e.ok} ${t('tracks')}${e.failed.length ? ` · ${e.failed.length} ✗` : ''}`;
+      : `${e.ok} ${t('tracks')}${e.failed.length ? ` · ${e.failed.length} ✗` : ''}${(e.omitted || []).length ? ` · ${e.omitted.length} ${t('skipped')}` : ''}`;
     li.innerHTML = `<span><strong>${e.name}</strong><em>${when} · ${resumen} · ${e.quality || e.kind}</em></span>`;
     li.className = e.failed.length && !e.ok ? 'bad' : 'ok';
     // El motivo de cada fallo, al alcance: es para lo que existe el historial.
-    if (e.failed.length) li.title = e.failed.map((f) => `${f.name}: ${f.reason}`).join('\n');
+    // Los fallos primero; las omitidas debajo, marcadas, para no confundirlas.
+    const motivos = [
+      ...e.failed.map((f) => `✗ ${f.name}: ${f.reason}`),
+      ...(e.omitted || []).map((f) => `↷ ${f.reason}`),
+    ];
+    if (motivos.length) li.title = motivos.join('\n');
 
     if (e.folder) {
       const open = document.createElement('button');

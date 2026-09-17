@@ -71,6 +71,8 @@ El mismo proceso que loguea es el que queda sirviendo: no hay dos arranques.
   arrancar. Verificado 2026-09-16 con una sesión que existía SOLO en el WAL.
 - `Invalid CKC` = Apple niega la licencia de **una pista** (catálogo viejo con llave `afs_`, o sin
   licencia en el país de la cuenta). **No** es sesión muerta: no relanzar ni pedir login.
+- El catálogo viejo ya **no pasa por el wrapper**: va por Widevine (ver `INVENTARIO_CORE.md` A9).
+  Del wrapper solo se usa el music token del puerto 30020.
 
 ## 6. Pendiente de verificar en Windows real
 

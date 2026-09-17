@@ -49,6 +49,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "[{i}/{total}] ✓ {} [{}] · {:.1}s ({:.1} baja / {:.1} descifra)",
                 o.name, o.quality_label, o.secs_total, o.secs_download, o.secs_decrypt
             ),
+            Err(ecam_core::Error::Track(t)) if t.kind == ecam_core::error::FailKind::Skipped => {
+                println!("[{i}/{total}] ↷ {t}")
+            }
             Err(e) => println!("[{i}/{total}] ✗ {e}"),
         }
     });
@@ -61,11 +64,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let report = collection::download_url(&ctx, &url).await?;
 
     println!(
-        "\n{} listos, {} con problemas, {:.1} MB bajados",
+        "\n{} listos, {} con problemas, {} omitidas, {:.1} MB bajados",
         report.done.len(),
         report.failed.len(),
+        report.skipped.len(),
         downloaded.load(Ordering::Relaxed) as f64 / 1_048_576.0
     );
+    // Omitidas = el catálogo ya decía que no existen. No son fallos.
+    for (_, reason) in &report.skipped {
+        println!("  ↷ {reason}");
+    }
     for (name, e) in &report.failed {
         println!("  ✗ {name}: {e}");
     }

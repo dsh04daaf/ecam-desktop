@@ -2,7 +2,7 @@
 
 use crate::amp::Amp;
 use crate::config::{Config, Quality};
-use crate::error::{Error, Result};
+use crate::error::{Error, FailKind, Result, TrackError};
 use crate::cancel::Cancel;
 use crate::track::{download_track, Progress, TrackJob, TrackOutcome};
 use once_cell::sync::Lazy;
@@ -138,15 +138,84 @@ pub struct Report {
     /// Motivo por track que no salió. Se guarda el nombre porque el usuario
     /// piensa en canciones, no en ids.
     pub failed: Vec<(String, Error)>,
+    /// Lo que no se intentó porque el catálogo ya decía que no existe (fuera de la
+    /// tienda, o sin la versión pedida). NO son fallos: van aparte.
+    pub skipped: Vec<(String, String)>,
 }
 
 impl Report {
     fn push(&mut self, label: String, r: std::result::Result<TrackOutcome, Error>) {
         match r {
             Ok(o) => self.done.push(o),
+            Err(Error::Track(t)) if t.kind == FailKind::Skipped => self.skipped.push((label, t.reason)),
             Err(e) => self.failed.push((label, e)),
         }
     }
+
+    fn extend(&mut self, other: Report) {
+        self.done.extend(other.done);
+        self.failed.extend(other.failed);
+        self.skipped.extend(other.skipped);
+    }
+}
+
+/// Motivo para NO intentar un elemento de un álbum, o `None` si se baja.
+///
+/// Solo decide lo que el catálogo dice con certeza; lo dudoso se intenta:
+///  * sin `playParams` en la tienda de la cuenta → no está en su catálogo;
+///  * Atmos/binaural pedido y la pista trae `audioTraits` sin atmos/spatial, o
+///    no tiene enhancedHls (catálogo viejo: solo AAC) → no existe en ese formato.
+/// Un videoclip se baja siempre que esté en el catálogo.
+pub fn skip_reason(track: &Value, home: Option<&Value>, quality: Quality, storefront: &str) -> Option<String> {
+    let home = home?;
+    let name = track["attributes"]["name"].as_str().unwrap_or("?");
+    if !home["playParams"]["id"].is_string() {
+        return Some(format!("{name}: no está en el catálogo de {}", storefront.to_uppercase()));
+    }
+    if track["type"].as_str() == Some("music-videos") {
+        return None;
+    }
+    if matches!(quality, Quality::Atmos | Quality::Binaural) {
+        let traits: Vec<&str> = home["audioTraits"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|x| x.as_str()).collect())
+            .unwrap_or_default();
+        let hls = home["extendedAssetUrls"]["enhancedHls"].is_string();
+        let spatial = traits.iter().any(|t| *t == "atmos" || *t == "spatial");
+        if !hls || (!traits.is_empty() && !spatial) {
+            return Some(format!("{name}: no tiene versión {}", quality.display()));
+        }
+    }
+    None
+}
+
+/// Atributos de cada pista en la tienda de la cuenta, por id.
+fn attrs_by_id(meta: &Value) -> std::collections::HashMap<String, Value> {
+    meta["data"][0]["relationships"]["tracks"]["data"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|t| Some((t["id"].as_str()?.to_string(), t["attributes"].clone())))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Un videoclip dentro de un álbum o una playlist, como una pista más.
+async fn download_mv_item(ctx: &Ctx<'_>, id: &str, dir: &Path, num: u32, label: &str) -> std::result::Result<TrackOutcome, Error> {
+    let t0 = std::time::Instant::now();
+    let path = crate::mv::download_music_video(ctx.cfg, ctx.amp, id, dir, Some(num)).await?;
+    Ok(TrackOutcome {
+        path,
+        name: label.to_string(),
+        artist: String::new(),
+        album: String::new(),
+        quality_label: "Music Video".into(),
+        skipped: false,
+        secs_download: 0.0,
+        secs_decrypt: 0.0,
+        secs_total: t0.elapsed().as_secs_f32(),
+    })
 }
 
 /// Punto de entrada: cualquier URL de Apple Music.
@@ -170,7 +239,7 @@ pub async fn download_url(ctx: &Ctx<'_>, url: &str) -> Result<Report> {
         Target::Artist { id, .. } => download_artist(ctx, &id).await,
         Target::Room { id, .. } => download_room(ctx, &id).await,
         Target::MusicVideo { id, .. } => {
-            let path = crate::mv::download_music_video(ctx.cfg, ctx.amp, &id, &ctx.cfg.output_dir).await?;
+            let path = crate::mv::download_music_video(ctx.cfg, ctx.amp, &id, &ctx.cfg.output_dir, None).await?;
             let mut r = Report::default();
             r.done.push(TrackOutcome {
                 path,
@@ -255,12 +324,22 @@ pub async fn download_album(
         }
     };
 
-    if used_storefront != amp.storefront {
+    // Atributos EN LA TIENDA DE LA CUENTA: con ellos se decide antes de bajar
+    // qué no existe. None = no se pudieron traer y se intenta todo, como antes.
+    let home_attrs = if used_storefront != amp.storefront {
         match amp.album(album_id).await {
-            Ok(home) => inject_enhanced_hls(&mut meta, &home),
-            Err(e) => tracing::warn!("no se pudo traer la metadata de {}: {e}", amp.storefront),
+            Ok(home) => {
+                inject_enhanced_hls(&mut meta, &home);
+                Some(attrs_by_id(&home))
+            }
+            Err(e) => {
+                tracing::warn!("no se pudo traer la metadata de {}: {e}", amp.storefront);
+                None
+            }
         }
-    }
+    } else {
+        Some(attrs_by_id(&meta))
+    };
 
     let album = meta["data"][0].clone();
     let album_attrs = album["attributes"].clone();
@@ -304,18 +383,30 @@ pub async fn download_album(
         }
         let attrs = t["attributes"].clone();
         let label = attrs["name"].as_str().unwrap_or("?").to_string();
-        let job = TrackJob {
-            track: attrs.clone(),
-            album: album_attrs.clone(),
-            adam_id: t["id"].as_str().unwrap_or_default().to_string(),
-            // El número de pista real manda; el índice es solo el respaldo.
-            track_num: attrs["trackNumber"].as_u64().unwrap_or(idx as u64 + 1) as u32,
-            disc_override: None,
-            output_dir: dir.clone(),
-            quality,
-            cover: cover.clone(),
+        let id = t["id"].as_str().unwrap_or_default().to_string();
+        let track_num = attrs["trackNumber"].as_u64().unwrap_or(idx as u64 + 1) as u32;
+        let home = home_attrs.as_ref().map(|m| m.get(&id).cloned().unwrap_or(Value::Null));
+        let res = if let Some(reason) = skip_reason(t, home.as_ref(), quality, &amp.storefront) {
+            // Ya se sabe que no existe: ni Apple ni el wrapper se tocan.
+            Err(Error::Track(TrackError::skipped(reason)))
+        } else if t["type"].as_str() == Some("music-videos") {
+            // Un álbum puede traer videoclips: van por la ruta de vídeo, dentro de
+            // la carpeta del álbum y numerados como una pista más.
+            download_mv_item(ctx, &id, &dir, track_num, &label).await
+        } else {
+            let job = TrackJob {
+                track: attrs.clone(),
+                album: album_attrs.clone(),
+                adam_id: id,
+                // El número de pista real manda; el índice es solo el respaldo.
+                track_num,
+                disc_override: None,
+                output_dir: dir.clone(),
+                quality,
+                cover: cover.clone(),
+            };
+            download_track_resilient(ctx, job).await
         };
-        let res = download_track_resilient(ctx, job).await;
         ctx.notify(i + 1, total, &res);
         report.push(label, res);
     }
@@ -349,18 +440,27 @@ pub async fn download_playlist(ctx: &Ctx<'_>, playlist_id: &str) -> Result<Repor
             "trackCount": Value::from(total as u64),
             "genreNames": attrs["genreNames"].clone(),
         });
-        let job = TrackJob {
-            track: attrs,
-            album: album_attrs,
-            adam_id: t["id"].as_str().unwrap_or_default().to_string(),
-            // La posición en la playlist, no la del álbum de origen.
-            track_num: i as u32 + 1,
-            disc_override: Some(1),
-            output_dir: dir.clone(),
-            quality,
-            cover: None,
+        let id = t["id"].as_str().unwrap_or_default().to_string();
+        let res = if !attrs["playParams"]["id"].is_string() {
+            Err(Error::Track(TrackError::skipped(format!(
+                "{label}: no está en el catálogo de {}", amp.storefront.to_uppercase()
+            ))))
+        } else if t["type"].as_str() == Some("music-videos") {
+            download_mv_item(ctx, &id, &dir, i as u32 + 1, &label).await
+        } else {
+            let job = TrackJob {
+                track: attrs,
+                album: album_attrs,
+                adam_id: id,
+                // La posición en la playlist, no la del álbum de origen.
+                track_num: i as u32 + 1,
+                disc_override: Some(1),
+                output_dir: dir.clone(),
+                quality,
+                cover: None,
+            };
+            download_track_resilient(ctx, job).await
         };
-        let res = download_track_resilient(ctx, job).await;
         ctx.notify(i + 1, total, &res);
         report.push(label, res);
     }
@@ -383,10 +483,7 @@ pub async fn download_artist(ctx: &Ctx<'_>, artist_id: &str) -> Result<Report> {
         // Un álbum que falle no puede tumbar la discografía entera.
         // Un álbum que falle no puede tumbar la discografía: se apunta y se sigue.
         match download_album(ctx, &amp.storefront, &id, None, &base).await {
-            Ok(r) => {
-                report.done.extend(r.done);
-                report.failed.extend(r.failed);
-            }
+            Ok(r) => report.extend(r),
             Err(e) => report.failed.push((format!("álbum {id}"), e)),
         }
     }
@@ -414,10 +511,7 @@ pub async fn download_room(ctx: &Ctx<'_>, room_id: &str) -> Result<Report> {
             }
         };
         match r {
-            Ok(rep) => {
-                report.done.extend(rep.done);
-                report.failed.extend(rep.failed);
-            }
+            Ok(rep) => report.extend(rep),
             Err(e) => report.failed.push((format!("{kind} {id}"), e)),
         }
     }
@@ -456,6 +550,39 @@ mod tests {
             Some(Target::MusicVideo { .. })
         ));
         assert!(parse_url("https://open.spotify.com/album/x").is_none());
+    }
+
+    #[test]
+    fn un_album_sin_slug_con_cancion_tambien_se_reconoce() {
+        assert_eq!(
+            parse_url("https://music.apple.com/in/album/1680989244?i=1680989615"),
+            Some(Target::Album { storefront: "in".into(), id: "1680989244".into(), only_song: Some("1680989615".into()) })
+        );
+    }
+
+    #[test]
+    fn lo_que_el_catalogo_dice_que_no_existe_se_omite() {
+        use serde_json::json;
+        let song = json!({"id": "1", "type": "songs", "attributes": {"name": "A"}});
+        let video = json!({"id": "2", "type": "music-videos", "attributes": {"name": "V"}});
+        let sin_play = json!({"extendedAssetUrls": {"enhancedHls": "x"}});
+        let con_atmos = json!({"playParams": {"id": "1"}, "audioTraits": ["lossless", "atmos"], "extendedAssetUrls": {"enhancedHls": "x"}});
+        let sin_atmos = json!({"playParams": {"id": "1"}, "audioTraits": ["lossless"], "extendedAssetUrls": {"enhancedHls": "x"}});
+        let legacy = json!({"playParams": {"id": "1"}, "audioTraits": ["lossy-stereo"]});
+        let video_ok = json!({"playParams": {"id": "2"}});
+
+        // Fuera del catálogo: siempre se omite.
+        assert!(skip_reason(&song, Some(&sin_play), Quality::Alac, "nz").is_some());
+        // Atmos: solo si la pista lo tiene.
+        assert!(skip_reason(&song, Some(&con_atmos), Quality::Atmos, "nz").is_none());
+        assert!(skip_reason(&song, Some(&sin_atmos), Quality::Binaural, "nz").is_some());
+        // Catálogo viejo: se baja en ALAC/AAC (sale AAC) y se omite en Atmos.
+        assert!(skip_reason(&song, Some(&legacy), Quality::Alac, "nz").is_none());
+        assert!(skip_reason(&song, Some(&legacy), Quality::Atmos, "nz").is_some());
+        // Un videoclip del álbum se baja con cualquier calidad.
+        assert!(skip_reason(&video, Some(&video_ok), Quality::Atmos, "nz").is_none());
+        // Sin datos de la tienda no se decide nada: se intenta.
+        assert!(skip_reason(&song, None, Quality::Atmos, "nz").is_none());
     }
 
     #[test]

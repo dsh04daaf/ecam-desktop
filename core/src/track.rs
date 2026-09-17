@@ -109,10 +109,17 @@ pub async fn download_track(
 
     // ── 1. De dónde salen los segmentos ────────────────────────────────────
     let enhanced = t["extendedAssetUrls"]["enhancedHls"].as_str().unwrap_or("");
+    // Catálogo viejo ya descifrado por Widevine (fMP4 limpio en un temporal).
+    let mut legacy_clear: Option<tempfile::NamedTempFile> = None;
+    let mut legacy_error = String::new();
     let (segments, quality_label) = if enhanced.is_empty() {
-        // Catálogo viejo: no hay enhancedHls. `webPlayback` devuelve una playlist
-        // FairPlay (30:cbcp256) que el mismo wrapper sí sabe descifrar, pero solo
-        // en AAC — se avisa para que nadie crea que bajó lossless.
+        // Catálogo viejo: no hay enhancedHls y solo existe en AAC 256. En Atmos o
+        // binaural no hay nada que bajar: se omite, no es un fallo.
+        if matches!(job.quality, Quality::Atmos | Quality::Binaural) {
+            return Err(Error::Track(TrackError::skipped(format!(
+                "{name}: no tiene versión {}", job.quality.display()
+            ))));
+        }
         let token = match wrapper_music_token(&cfg.decrypt_port).await {
             Some(tk) if !tk.is_empty() => tk,
             _ => cfg.media_user_token.clone(),
@@ -120,9 +127,26 @@ pub async fn download_track(
         if token.is_empty() {
             return Err(Error::Track(TrackError::unavailable("sin stream lossless y sin token para el respaldo")));
         }
+        // 1) Widevine (flavor 28:ctrp256, cenc). Descifra también las pistas con
+        //    llave FairPlay `afs_`, que el key server rechaza SIEMPRE, y no pasa por
+        //    el wrapper. Probado en el bot y en AMDL el 2026-09-17: PCM idéntico al
+        //    de mp4decrypt con la misma llave.
+        match legacy_widevine(cfg, amp, &job.adam_id, &token, &job.output_dir, cancel, progress.as_ref()).await {
+            Ok(tmp) => legacy_clear = Some(tmp),
+            Err(e) => {
+                tracing::warn!("{name}: legacy por Widevine falló ({e}); se prueba FairPlay");
+                legacy_error = e.to_string();
+            }
+        }
+        if legacy_clear.is_some() {
+            (Vec::new(), "AAC".to_string())
+        } else {
+        // 2) Respaldo: la playlist FairPlay (30:cbcp256) por el wrapper, como antes.
         let url = webplayback_media_url(&job.adam_id, &amp.bearer, &token)
             .await
-            .ok_or_else(|| Error::Track(TrackError::unavailable("no hay stream disponible para este track")))?;
+            .ok_or_else(|| Error::Track(TrackError::unavailable(format!(
+                "pista antigua que no se pudo descifrar ({legacy_error})"
+            ))))?;
         let text = http().get(&url).header("User-Agent", UA).send().await?.text().await?;
         let segs = crate::hls::parse_media_playlist(&text, &url);
         if segs.is_empty() {
@@ -130,15 +154,29 @@ pub async fn download_track(
         }
         tracing::warn!("{name}: sin stream lossless, se usa el respaldo AAC de webPlayback");
         (segs, "AAC".to_string())
+        }
     } else {
         let master = http().get(enhanced).header("User-Agent", UA).send().await?.text().await?;
-        let (media_url, label) = crate::hls::select_media_url(&master, enhanced, job.quality, cfg)
-            .ok_or_else(|| {
-                Error::Track(TrackError::unavailable(format!(
-                    "este track no tiene {} (o no cabe en el máximo configurado)",
-                    job.quality.display()
-                )))
-            })?;
+        let mut chosen = crate::hls::select_media_url(&master, enhanced, job.quality, cfg);
+        if chosen.is_none() && job.quality == Quality::Alac {
+            // Pista sin ALAC: se entrega en AAC (lo que avisa la card) en vez de fallar.
+            chosen = crate::hls::select_media_url(&master, enhanced, Quality::Aac, cfg);
+            if chosen.is_some() {
+                tracing::warn!("{name}: sin ALAC, se baja en AAC");
+            }
+        }
+        let (media_url, label) = chosen.ok_or_else(|| {
+            let motivo = format!(
+                "{name}: no tiene versión {} (o no cabe en el máximo configurado)",
+                job.quality.display()
+            );
+            // Sin la versión Atmos/binaural pedida no es un fallo: se omite.
+            if matches!(job.quality, Quality::Atmos | Quality::Binaural) {
+                Error::Track(TrackError::skipped(motivo))
+            } else {
+                Error::Track(TrackError::unavailable(motivo))
+            }
+        })?;
         let media = http().get(&media_url).header("User-Agent", UA).send().await?.text().await?;
         let segs = crate::hls::parse_media_playlist(&media, &media_url);
         if segs.is_empty() {
@@ -151,13 +189,14 @@ pub async fn download_track(
     // las pistas de catálogo viejo que caen al respaldo de webPlayback. El key
     // server de Apple las rechaza SIEMPRE con "Invalid CKC error", así que ni se
     // baja el audio ni se pide la llave: no tiene arreglo.
-    if segments
-        .iter()
-        .any(|s| s.key_uri.as_deref().is_some_and(|u| u.contains("://itunes.apple.com/afs_")))
+    if legacy_clear.is_none()
+        && segments
+            .iter()
+            .any(|s| s.key_uri.as_deref().is_some_and(|u| u.contains("://itunes.apple.com/afs_")))
     {
-        return Err(Error::Track(TrackError::unavailable(
-            "pista antigua (llave afs_): Apple no deja descifrarla",
-        )));
+        return Err(Error::Track(TrackError::unavailable(format!(
+            "pista antigua (llave afs_) que no se pudo descifrar ({legacy_error})"
+        ))));
     }
 
     let t_download = std::time::Instant::now();
@@ -167,7 +206,7 @@ pub async fn download_track(
     // bruto) es feo y confunde.
     let tmp_dir = scratch_dir(&job.output_dir)?;
     let enc_file = tempfile::NamedTempFile::new_in(&tmp_dir)?;
-    {
+    if legacy_clear.is_none() {
         let mut w = BufWriter::new(enc_file.as_file());
         // El HLS de Apple llega de dos formas: un solo archivo repetido en todos
         // los #EXTINF, o un .m4a por fragmento. Deduplicar por URL cubre las dos.
@@ -215,7 +254,7 @@ pub async fn download_track(
     // "auto" mira si el wrapper instalado tiene key server. Hace falta porque la
     // app se distribuye y el usuario puede arrastrar una imagen vieja sin el
     // puerto 40020: forzar temari ahi dejaria la app inservible.
-    let usar_temari = match motor.as_str() {
+    let usar_temari = legacy_clear.is_none() && match motor.as_str() {
         "wrapper" => false,
         "temari" => true,
         _ => crate::temari::TemariDecrypter::probe(&decrypt_port, key_port).await,
@@ -227,7 +266,7 @@ pub async fn download_track(
     }
     // Las plantillas se piden AQUI, en async, antes de entrar al hilo
     // bloqueante: los URI de llave ya se conocen (vienen del m3u8).
-    let mut temari_pre = if usar_temari {
+    let mut temari_pre = if usar_temari && legacy_clear.is_none() {
         Some(
             crate::temari::TemariDecrypter::prepare(&decrypt_port, key_port, &adam_id, &key_uris)
                 .await?,
@@ -236,7 +275,15 @@ pub async fn download_track(
         None
     };
 
+    let legacy_path = legacy_clear.as_ref().map(|f| f.path().to_path_buf());
     tokio::task::spawn_blocking(move || -> Result<()> {
+        // Legacy ya descifrado por Widevine: se monta igual que el resto, con un
+        // "descifrador" que deja los samples tal cual.
+        if let Some(clear) = legacy_path {
+            let mut pass = PassThrough;
+            let frags = count_fragments(&clear).unwrap_or(0);
+            return decrypt_to_file(&clear, &out_path_c, &dir, &final_dir, &mut pass, &adam_id, &[], frags, progress_c);
+        }
         let mut wrapper_conn;
         let dec: &mut dyn KeyedDecryptor = match temari_pre.as_mut() {
             Some(t) => t,
@@ -254,6 +301,9 @@ pub async fn download_track(
     .map_err(|e| Error::Other(format!("la tarea de descifrado se cayó: {e}")))??;
 
     let secs_decrypt = t_decrypt.elapsed().as_secs_f32();
+    // El fMP4 legacy en claro ya está montado: fuera antes de limpiar la carpeta de
+    // trabajo, o el `remove_dir` del final la encuentra llena y se queda.
+    drop(legacy_clear);
 
 
     // ── 4. Carátula, letras y etiquetas ────────────────────────────────────
@@ -417,6 +467,138 @@ fn decrypt_to_file(
         tables.duration_seconds(timing.media_timescale)
     );
     Ok(())
+}
+
+/// "Descifrador" que no toca nada: para montar un fMP4 que ya viene en claro.
+struct PassThrough;
+
+impl crate::mp4::frag::Decryptor for PassThrough {
+    fn decrypt(&mut self, data: &[u8]) -> Result<Vec<u8>> {
+        Ok(data.to_vec())
+    }
+}
+
+impl KeyedDecryptor for PassThrough {
+    fn ensure_key(&mut self, _adam_id: &str, _key_uri: &str) -> Result<()> {
+        Ok(())
+    }
+}
+
+fn count_fragments(path: &Path) -> Result<usize> {
+    let mut r = BufReader::new(std::fs::File::open(path)?);
+    let mut n = 0usize;
+    while let Some((kind, _)) = mp4::read_box(&mut r)? {
+        if &kind == b"moof" {
+            n += 1;
+        }
+    }
+    Ok(n)
+}
+
+/// Pista del catálogo viejo por Widevine. Devuelve el fMP4 ya descifrado (sin
+/// montar) en un temporal.
+///
+/// Es la receta de AppleMusicDecrypt (`_rip_song_legacy`) y wrapper-manager
+/// (`webplay.go`): webPlayback → asset `28:ctrp256` (cenc) → licencia Widevine con
+/// el music token de la cuenta → descifrado AES-CTR nativo. Necesita las mismas
+/// credenciales de Widevine que los music videos.
+async fn legacy_widevine(
+    cfg: &Config,
+    amp: &Amp,
+    adam_id: &str,
+    music_token: &str,
+    output_dir: &Path,
+    cancel: &crate::cancel::Cancel,
+    progress: Option<&Progress>,
+) -> Result<tempfile::NamedTempFile> {
+    let body = serde_json::json!({ "salableAdamId": adam_id });
+    let v: Value = http()
+        .post("https://play.music.apple.com/WebObjects/MZPlay.woa/wa/webPlayback")
+        .header("Content-Type", "application/json")
+        .header("Origin", "https://music.apple.com")
+        .header("Referer", "https://music.apple.com/")
+        .header("User-Agent", UA)
+        .header("Authorization", format!("Bearer {}", amp.bearer))
+        .header("x-apple-music-user-token", music_token)
+        .json(&body)
+        .send()
+        .await?
+        .json()
+        .await?;
+    let media_url = v["songList"][0]["assets"]
+        .as_array()
+        .and_then(|a| a.iter().find(|x| x["flavor"].as_str() == Some("28:ctrp256")))
+        .and_then(|x| x["URL"].as_str())
+        .map(String::from)
+        .ok_or_else(|| Error::Other(format!(
+            "webPlayback no trae el asset de Widevine (failureType={})", v["failureType"]
+        )))?;
+
+    let playlist = http().get(&media_url).header("User-Agent", UA).send().await?.text().await?;
+    let mut key_uri = String::new();
+    let mut files: Vec<String> = Vec::new();
+    for line in playlist.lines().map(str::trim) {
+        if let Some(rest) = line.strip_prefix("#EXT-X-KEY:") {
+            if key_uri.is_empty() {
+                key_uri = crate::hls::attr(&crate::hls::attrs(rest), "URI").unwrap_or("").to_string();
+            }
+        } else if let Some(rest) = line.strip_prefix("#EXT-X-MAP:") {
+            if let Some(u) = crate::hls::attr(&crate::hls::attrs(rest), "URI") {
+                let u = crate::hls::join(&media_url, u);
+                if !files.contains(&u) {
+                    files.push(u);
+                }
+            }
+        } else if !line.is_empty() && !line.starts_with('#') {
+            let u = crate::hls::join(&media_url, line);
+            if !files.contains(&u) {
+                files.push(u);
+            }
+        }
+    }
+    let (prefix, kid) = key_uri
+        .split_once(',')
+        .ok_or_else(|| Error::Other("la playlist de Widevine no trae llave".into()))?;
+    if files.is_empty() {
+        return Err(Error::Other("la playlist de Widevine no trae segmentos".into()));
+    }
+    let key = crate::mv::content_key(cfg, adam_id, kid, prefix, &amp.bearer, music_token).await?;
+    tracing::info!("[AAC legacy] {adam_id}: licencia de Widevine obtenida");
+
+    let tmp_dir = scratch_dir(output_dir)?;
+    let enc = tempfile::NamedTempFile::new_in(&tmp_dir)?;
+    {
+        let mut w = BufWriter::new(enc.as_file());
+        // Un solo .mp4 con rangos (init + fragmentos): se baja entero una vez.
+        for u in &files {
+            let mut resp = http().get(u).header("User-Agent", UA).send().await?;
+            if !resp.status().is_success() {
+                return Err(Error::Track(TrackError::transient(format!(
+                    "el segmento respondió {}", resp.status().as_u16()
+                ))));
+            }
+            while let Some(chunk) = resp.chunk().await? {
+                cancel.check()?;
+                w.write_all(&chunk)?;
+                if let Some(p) = progress {
+                    p(Stage::Downloading(chunk.len() as u64));
+                }
+            }
+        }
+        w.flush()?;
+    }
+    let clear = tempfile::NamedTempFile::new_in(&tmp_dir)?;
+    let (src_path, dst_path) = (enc.path().to_path_buf(), clear.path().to_path_buf());
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        let mut src = std::fs::File::open(&src_path)?;
+        let mut w = BufWriter::new(std::fs::File::create(&dst_path)?);
+        crate::mv::cbcs::decrypt_file(&mut src, &mut w, &key)?;
+        w.flush()?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| Error::Other(format!("el descifrado legacy se cayó: {e}")))??;
+    Ok(clear)
 }
 
 /// Respaldo para el catálogo viejo: la playlist FairPlay que sirve `webPlayback`.

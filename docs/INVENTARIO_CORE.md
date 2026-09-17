@@ -18,7 +18,10 @@ funciones más que la copia del bot — artwork, portadas, formatos de nombre),
 | A5 | `moof` limpio: quitar `senc`/`saiz` y recalcular `trun data_offset` | `:1416` | Varios `trun`/`traf`/`trak` por fragmento |
 | A6 | El tamaño del `moov` debe ser idéntico entre pasadas (`stco` de tamaño fijo) | `:838-882` | Si cambia, todos los offsets quedan corridos |
 | A7 | UA de Chrome para MV | (port MV nativo) | Sin él Apple entrega 1080p en vez de la máxima |
-| A8 | Legacy AAC `cbc2` sin `senc` | ver memoria `apple_legacy_aac` | Fix 2026-06-08; álbum 377826006 sigue sin ser descifrable |
+| A8 | Legacy AAC `cbc2` sin `senc` | ver memoria `apple_legacy_aac` | Fix 2026-06-08. **Desde 2026-09-17 el catálogo viejo va por Widevine** (ver A9); este camino FairPlay queda de respaldo |
+| A9 | Catálogo viejo (sin `enhancedHls`) por **Widevine**: webPlayback `28:ctrp256` (cenc) → licencia con el music token del wrapper → AES-CTR nativo (`mv::cbcs::cenc_decrypt_sample`) → se monta con `PassThrough` | `track.rs::legacy_widevine` | Casi todas las pistas viejas llevan llave FairPlay `afs_`, que el KPS rechaza siempre. Por Widevine bajan: álbum 377826006 12/12, **PCM idéntico** al del bot y al de `mp4decrypt`. Necesita las credenciales de Widevine de los vídeos |
+| A10 | Lo que el catálogo dice que no existe se **omite** antes de bajar (`FailKind::Skipped`, `collection::skip_reason`): sin `playParams` en la tienda de la cuenta, o Atmos/binaural sin rasgo `atmos`/`spatial` | `collection.rs` | En el bot, contarlo como error llenaba el aviso final de ruido (255 × "No atmos stream" en 18 días). Va aparte en `Report.skipped`, en la fila (↷) y en el historial (`omitted`) |
+| A11 | Los **videoclips de un álbum** se bajan con el álbum, en su carpeta y numerados ("11. Título (res).mp4") | `collection::download_mv_item`, `mv::download_music_video(album_track_num)` | *HIT ME HARD AND SOFT* trae uno; antes daba "No enhancedHls URL" |
 
 ## B. Problema conocido que el port **debe** arreglar (no replicar)
 

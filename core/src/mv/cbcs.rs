@@ -256,6 +256,9 @@ pub fn decrypt_file<R: Read + Seek, W: Write>(src: &mut R, out: &mut W, key_hex:
     let n = src.read(&mut head)?;
     head.truncate(n);
     let (crypt, skip, iv_size, const_iv) = read_tenc(&head)?;
+    // `schm` dice el esquema: 'cbcs' (music videos) o 'cenc' (AES-CTR). El AAC del
+    // catálogo viejo por Widevine (flavor 28:ctrp256) llega en 'cenc'.
+    let is_cenc = scheme_of(&head).as_deref() == Some("cenc");
 
     src.seek(SeekFrom::Start(0))?;
     let mut pending: Vec<(Vec<crate::mp4::frag::SampleEnc>, Vec<(u64, u32)>)> = Vec::new();
@@ -334,7 +337,9 @@ pub fn decrypt_file<R: Read + Seek, W: Write>(src: &mut R, out: &mut W, key_hex:
                             continue;
                         }
                         let sample = &mut body[off..off + size];
-                        if info.subsamples.is_empty() {
+                        if is_cenc {
+                            cenc_decrypt_sample(sample, &key, &iv, &info.subsamples);
+                        } else if info.subsamples.is_empty() {
                             decrypt_range(sample, &key, &iv, crypt, skip);
                         } else {
                             let mut p = 0usize;
@@ -360,6 +365,51 @@ pub fn decrypt_file<R: Read + Seek, W: Write>(src: &mut R, out: &mut W, key_hex:
         }
     }
     Ok(())
+}
+
+/// Esquema de protección del init (`schm`): "cbcs", "cenc"…
+fn scheme_of(head: &[u8]) -> Option<String> {
+    let pos = head.windows(4).position(|w| w == b"schm")?;
+    head.get(pos + 8..pos + 12).map(|s| String::from_utf8_lossy(s).to_string())
+}
+
+/// Descifra un sample en su sitio con ISO 23001-7 'cenc' (AES-128-CTR).
+///
+/// El IV es la mitad alta del bloque contador (los de 8 bytes van rellenos con
+/// ceros). Con subsamples solo van cifrados los tramos protegidos, y el contador
+/// SIGUE de uno a otro: no se reinicia por tramo.
+pub fn cenc_decrypt_sample(sample: &mut [u8], key: &[u8; 16], iv: &[u8; 16], subsamples: &[crate::mp4::frag::Subsample]) {
+    use aes::cipher::{BlockEncrypt, KeyInit};
+    let cipher = aes::Aes128::new(key.into());
+    let mut counter = u128::from_be_bytes(*iv);
+    let mut stream = [0u8; 16];
+    let mut used = 16usize;
+    let mut apply = |data: &mut [u8]| {
+        for b in data.iter_mut() {
+            if used == 16 {
+                let mut block = aes::Block::from(counter.to_be_bytes());
+                cipher.encrypt_block(&mut block);
+                stream.copy_from_slice(&block);
+                counter = counter.wrapping_add(1);
+                used = 0;
+            }
+            *b ^= stream[used];
+            used += 1;
+        }
+    };
+    if subsamples.is_empty() {
+        apply(sample);
+        return;
+    }
+    let mut p = 0usize;
+    for ss in subsamples {
+        p += ss.clear as usize;
+        let n = ss.cipher as usize;
+        if n > 0 && p + n <= sample.len() {
+            apply(&mut sample[p..p + n]);
+            p += n;
+        }
+    }
 }
 
 fn senc_of(traf: &[u8], iv_size: usize) -> Option<Vec<crate::mp4::frag::SampleEnc>> {
@@ -409,6 +459,34 @@ mod tests {
         let children = &entry.payload[78..];
         assert!(find(children, &[b"sinf"]).is_none(), "la protección se va");
         assert!(find(children, &[b"hvcC"]).is_some(), "la config del códec se queda");
+    }
+
+    #[test]
+    fn cenc_descifra_el_vector_de_nist_y_el_contador_sigue_entre_subsamples() {
+        // NIST SP 800-38A F.5.2 (CTR-AES128.Decrypt), dos bloques.
+        let key: [u8; 16] = hex::decode("2b7e151628aed2a6abf7158809cf4f3c").unwrap().try_into().unwrap();
+        let iv: [u8; 16] = hex::decode("f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff").unwrap().try_into().unwrap();
+        let ct = hex::decode("874d6191b620e3261bef6864990db6ce9806f66b7970fdff8617187bb9fffdff").unwrap();
+        let pt = hex::decode("6bc1bee22e409f96e93d7e117393172aae2d8a571e03ac9c9eb76fac45af8e51").unwrap();
+
+        let mut whole = ct.clone();
+        cenc_decrypt_sample(&mut whole, &key, &iv, &[]);
+        assert_eq!(whole, pt);
+
+        // 4 bytes en claro + 16 cifrados + 4 en claro + 16 cifrados: el contador
+        // no se reinicia en el segundo tramo.
+        let mut sample = vec![0xAAu8; 4];
+        sample.extend_from_slice(&ct[..16]);
+        sample.extend_from_slice(&[0xBB; 4]);
+        sample.extend_from_slice(&ct[16..]);
+        let subs = [
+            crate::mp4::frag::Subsample { clear: 4, cipher: 16 },
+            crate::mp4::frag::Subsample { clear: 4, cipher: 16 },
+        ];
+        cenc_decrypt_sample(&mut sample, &key, &iv, &subs);
+        assert_eq!(&sample[4..20], &pt[..16]);
+        assert_eq!(&sample[24..40], &pt[16..]);
+        assert_eq!(&sample[..4], &[0xAA; 4]);
     }
 
     #[test]
