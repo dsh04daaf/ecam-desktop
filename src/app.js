@@ -227,6 +227,16 @@ ecam.listen('wrapper', (ev) => {
       break;
     case 'ready': $('login-error').textContent = ''; show('main'); refresh(); break;
     case 'session_dead': addRow('⟳ ' + ev.value, false); break;
+    // El motor se cerró sin arrancar. Antes no se emitía nada y la pantalla se
+    // quedaba esperando un 'ready' que no llegaba: había que DECIRLO, y en la
+    // pantalla donde esté el usuario (instalar el motor o login).
+    case 'exited': {
+      const msg = t(ev.value.reason) + (ev.value.last_line ? `\n${ev.value.last_line}` : '');
+      $('install-hint').textContent = msg;
+      $('login-error').textContent = msg;
+      clearInterval(countdownTimer);
+      break;
+    }
   }
 });
 
