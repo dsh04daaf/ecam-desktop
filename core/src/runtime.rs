@@ -14,12 +14,24 @@ use tokio::sync::mpsc;
 /// Ruta dentro de la distro donde vive la sesión.
 const DATA_DIR: &str = "/app/rootfs/data/data/com.apple.android.music/files";
 
-/// Dónde puede estar la base de la sesión, **relativa a `files/`**.
+/// Qué prueba que hay una cuenta dentro, **relativo a `files/`**.
 ///
-/// Son dos porque los dos builds del wrapper no coinciden: el x86 de la distro
-/// la mete en `mpl_db/` y el arm64 que usa la versión de macOS deja el mismo
-/// juego de bases al nivel de `files/`. Aquí manda el x86, pero mirar solo una
-/// ruta es justo el fallo que dejó la versión de Mac pidiendo login en bucle.
+/// ⚠️ NO vale mirar `kvs.sqlitedb`: **medido**, el wrapper crea todas sus bases
+/// (`accounts`, `cookies`, `httpcache`, `kvs`) en el primer arranque, sin
+/// cuenta y sin haber hecho login — aquí (x86) en `files/mpl_db/` y el arm64 de
+/// la versión de Mac en `files/`. Servía para nada: falso negativo en Mac
+/// (login en bucle) y falso positivo si se miran las dos rutas (la app cree que
+/// hay sesión, lanza el wrapper sin credenciales y el `login failed` devuelve al
+/// login igual).
+///
+/// Estos dos los escribe el wrapper **sólo tras cachear la cuenta**
+/// (`write_storefront_id`/`write_music_token`), en `files/` e igual en los dos
+/// builds, y ANTES de abrir los puertos, así que al llegar el `Ready` ya están.
+/// Se exige que no estén vacíos.
+const SESSION_MARKERS: [&str; 2] = ["STOREFRONT_ID", "MUSIC_TOKEN"];
+
+/// Lo que hay que borrar para cerrar sesión: las bases de la cuenta en las dos
+/// disposiciones, más los marcadores (si se dejan, seguiría "habiendo sesión").
 const SESSION_DB_PATHS: [&str; 2] = ["mpl_db/kvs.sqlitedb", "kvs.sqlitedb"];
 
 /// Dónde corre el wrapper.
@@ -279,9 +291,10 @@ impl Runtime {
         match self.backend {
             Backend::External => crate::wrapper::Wrapper::probe(&self.decrypt_port),
             _ => {
-                let prueba = SESSION_DB_PATHS
+                // `-s` = existe y no está vacío.
+                let prueba = SESSION_MARKERS
                     .iter()
-                    .map(|r| format!("[ -f {DATA_DIR}/{r} ]"))
+                    .map(|r| format!("[ -s {DATA_DIR}/{r} ]"))
                     .collect::<Vec<_>>()
                     .join(" || ");
                 self.run_in_distro(&prueba).await.unwrap_or(false)
@@ -299,6 +312,7 @@ impl Runtime {
         let borrar = SESSION_DB_PATHS
             .iter()
             .flat_map(|r| ["", "-wal", "-shm"].map(move |s| format!("{DATA_DIR}/{r}{s}")))
+            .chain(SESSION_MARKERS.iter().map(|r| format!("{DATA_DIR}/{r}")))
             .collect::<Vec<_>>()
             .join(" ");
         self.run_in_distro(&format!("rm -f {borrar}")).await?;
