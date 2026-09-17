@@ -1,6 +1,6 @@
 [package]
 name = "ecam-desktop"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 description = "ECAM Desktop — Apple Music para Windows"
 default-run = "ecam-desktop"
