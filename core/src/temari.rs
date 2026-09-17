@@ -32,6 +32,11 @@ use std::collections::HashMap;
 use temari::rounds::{self, Template};
 use temari::template::template_from_json;
 
+/// Resultado de [`TemariDecrypter::probe`] por `host:puerto`, para no repetir la
+/// comprobación en cada pista.
+static CACHE_PROBE: tokio::sync::Mutex<Vec<(String, bool)>> =
+    tokio::sync::Mutex::const_new(Vec::new());
+
 /// Descifrador local. Lleva ya cargadas las plantillas de la pista.
 pub struct TemariDecrypter {
     /// key_uri -> plantilla ya parseada.
@@ -102,10 +107,48 @@ impl TemariDecrypter {
         Ok(Self { plantillas, activa: None })
     }
 
-    /// ¿Hay key server escuchando? Para decidir si se puede usar este motor.
+    /// ¿Hay key server **que conteste**? Es lo que decide si se usa este motor.
+    ///
+    /// ⚠️ NO vale con abrir un socket. Con el motor en Docker, publicar el puerto
+    /// (`-p 40020:40020`) hace que **el propio Docker acepte la conexión aunque
+    /// dentro no escuche nadie**: el `connect` decía que sí, se elegía este motor
+    /// y la descarga moría con "el key server no responde". Pasó en un Mac de
+    /// verdad, y antes de publicar ese puerto no pasaba porque el `connect`
+    /// fallaba y se caía al camino antiguo, que es lo correcto.
+    ///
+    /// Así que se le pide la plantilla de **prefetch** (`adamId=0`), que es la
+    /// misma comprobación que usa el script de re-login y **no gasta licencia**
+    /// porque reutiliza el contexto ya calentado. Sólo cuenta como key server si
+    /// devuelve una plantilla con `ctx`.
     pub async fn probe(addr: &str, key_port: u16) -> bool {
         let host = addr.rsplit_once(':').map(|(h, _)| h).unwrap_or(addr);
-        tokio::net::TcpStream::connect((host, key_port)).await.is_ok()
+        // Se cachea por motor: esto es una propiedad de la imagen instalada, no
+        // de la pista, y `probe` se llama en CADA pista. Sin la caché, un álbum
+        // de 20 pistas son 20 peticiones de más (y 20 esperas si el puerto está
+        // publicado pero muerto).
+        let clave = format!("{host}:{key_port}");
+        if let Some((_, v)) = CACHE_PROBE.lock().await.iter().find(|(k, _)| *k == clave) {
+            return *v;
+        }
+        let url = format!(
+            "http://{host}:{key_port}/?adamId=0&uri={}",
+            urlencode(PREFETCH_KEY)
+        );
+        let cliente = match reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(20))
+            .build()
+        {
+            Ok(c) => c,
+            Err(_) => return false,
+        };
+        let hay = match cliente.get(&url).send().await {
+            Ok(r) if r.status().is_success() => {
+                r.text().await.map(|c| c.contains("\"ctx\"")).unwrap_or(false)
+            }
+            _ => false,
+        };
+        CACHE_PROBE.lock().await.push((clave, hay));
+        hay
     }
 
     fn activa(&self) -> Result<&Template> {

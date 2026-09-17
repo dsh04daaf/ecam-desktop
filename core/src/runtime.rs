@@ -334,13 +334,13 @@ impl Runtime {
                     "-p".into(), "127.0.0.1:10020:10020".into(),
                     "-p".into(), "127.0.0.1:20020:20020".into(),
                     "-p".into(), "127.0.0.1:30020:30020".into(),
-                    // 40020 = key server. La imagen arm64 nativa NO lo trae (la
-                    // ofuscacion de la libreria arm64 es otra instancia, asi que
-                    // Temari, que traduce el codigo x86, no puede consumir su
-                    // plantilla). Se publica igualmente porque una imagen x86
-                    // corriendo emulada SI lo trae, y el motor "auto" lo prueba
-                    // y cae al 10020 cuando no contesta.
-                    "-p".into(), "127.0.0.1:40020:40020".into(),
+                    // ⚠️ El 40020 (key server) NO se publica. La imagen arm64 no
+                    // lo trae, y publicar un puerto que nadie escucha es PEOR que
+                    // no publicarlo: Docker acepta la conexión igualmente, así que
+                    // el motor "auto" creía que había key server y la descarga
+                    // moría con "el key server no responde". Medido en un Mac.
+                    // Si algún día se usa una imagen que sí lo traiga, se publica
+                    // entonces (y la detección ya pide la plantilla, no un socket).
                     "-v".into(),
                     format!("{}:{VOLUME_MOUNT}", data_dir.display()),
                     image.clone(),
@@ -729,7 +729,10 @@ mod tests {
             .filter(|(i, _)| *i > 0 && args[i - 1] == "-p")
             .map(|(_, a)| a)
             .collect();
-        assert_eq!(publicados.len(), 4, "faltan puertos: {args:?}");
+        assert_eq!(publicados.len(), 3, "faltan puertos: {args:?}");
+        // El 40020 no va: publicar un puerto sin nadie detrás engaña a la
+        // detección del key server (Docker acepta la conexión igual).
+        assert!(!publicados.iter().any(|p| p.contains("40020")), "el 40020 no se publica: {args:?}");
         for p in publicados {
             // Por el 10020 viajan las llaves de FairPlay y el audio en claro. Si
             // esto se publica en 0.0.0.0, queda abierto a toda la red.
