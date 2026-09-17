@@ -146,8 +146,57 @@ pub enum Event {
     Ready,
     /// La sesión murió (ver `wrapper::FATAL_ERRORS`): hay que relanzar.
     SessionDead(String),
+    /// El motor se cerró **sin llegar a escuchar**, o sea que no arrancó.
+    ///
+    /// Sin esto la UI se quedaba esperando un `Ready` que no iba a llegar y en
+    /// pantalla no salía nada: el síntoma que dieron dos intentos en Mac. Lleva
+    /// el motivo ya traducido a algo que se pueda accionar (ver `startup_hint`)
+    /// y la última línea cruda para el log.
+    Exited { reason: String, last_line: String },
     /// Cualquier otra línea, para el log de diagnóstico.
     Log(String),
+}
+
+/// Por qué no arrancó el motor, a partir de lo que dejó en stderr.
+///
+/// Se mira TODO lo que escribió (el `docker run` y el wrapper comparten el
+/// mismo stderr), porque los fallos de arranque son de dos familias: los del
+/// propio Docker (imagen que falta, puerto ocupado, demonio apagado) y los del
+/// wrapper ya dentro del contenedor.
+///
+/// El caso que costó dos intentos en Mac es el primero: un contenedor **sin
+/// privilegios** no puede montar `/dev/urandom` ni `/proc`, y el wrapper solo
+/// decía `Operation not permitted`, que no le dice nada a nadie. Docker Desktop
+/// lanza sin `--privileged` cuando le das al botón Run de su interfaz, así que
+/// es un error fácil de encontrarse.
+pub fn startup_hint(log: &str) -> &'static str {
+    // Se devuelve una CLAVE de i18n, no un texto: la app habla tres idiomas y
+    // quien ve esto suele ser alguien instalándola por primera vez.
+    // El orden importa: lo más específico primero.
+    if log.contains("Operation not permitted")
+        && (log.contains("mount /dev/urandom") || log.contains("mount proc"))
+    {
+        return "exit_sin_privilegios";
+    }
+    if log.contains("Unable to find image") || log.contains("No such image") {
+        return "exit_sin_imagen";
+    }
+    if log.contains("port is already allocated") || log.contains("address already in use") {
+        return "exit_puerto_ocupado";
+    }
+    if log.contains("Cannot connect to the Docker daemon") || log.contains("daemon is not running") {
+        return "exit_sin_docker";
+    }
+    if log.contains("permission denied") && log.contains("docker.sock") {
+        return "exit_socket_docker";
+    }
+    if log.contains("no space left on device") {
+        return "exit_sin_espacio";
+    }
+    if log.contains("exec format error") {
+        return "exit_arquitectura";
+    }
+    "exit_generico"
 }
 
 /// Traduce una línea del wrapper a un estado de la UI.
@@ -514,18 +563,64 @@ impl Runtime {
         tokio::spawn(async move {
             let mut lines = BufReader::new(stderr).lines();
             let mut listening = 0;
+            // Para el diagnóstico si el motor se cierra sin arrancar. El stderr
+            // es el mismo para `docker run` y para el wrapper, así que aquí caen
+            // los dos tipos de fallo. Se guarda acotado: el arranque son unas
+            // pocas líneas y no queremos crecer sin tope.
+            let mut arranque = String::new();
+            let mut ultima = String::new();
+            let mut arrancado = false;
+            let mut explicado = false;
             while let Ok(Some(line)) = lines.next_line().await {
                 let ev = parse_line(&line);
                 let ready = matches!(ev, Event::Listening(_)) && {
                     listening += 1;
                     listening >= 3
                 };
+                // Estos ya le dicen al usuario qué pasó (contraseña mala, código
+                // caducado, mensaje de Apple). Si luego el proceso se cierra, el
+                // aviso genérico solo taparía el bueno.
+                if matches!(
+                    ev,
+                    Event::TwoFactorExpired
+                        | Event::AuthError { .. }
+                        | Event::LoginFailed
+                        | Event::ServerMessage(_)
+                ) {
+                    explicado = true;
+                }
+                if !arrancado {
+                    if arranque.len() < 8192 {
+                        arranque.push_str(&line);
+                        arranque.push('\n');
+                    }
+                    // El ruido del linker de Android no explica nada y tapa la
+                    // línea que sí importa.
+                    let l = line.trim();
+                    if !l.is_empty() && !l.contains("WARNING: linker:") && !l.contains("bionic_open_tzdata") {
+                        ultima = l.to_string();
+                    }
+                }
                 if tx.send(ev).await.is_err() {
-                    break;
+                    return;
                 }
-                if ready && tx.send(Event::Ready).await.is_err() {
-                    break;
+                if ready {
+                    arrancado = true;
+                    if tx.send(Event::Ready).await.is_err() {
+                        return;
+                    }
                 }
+            }
+            // stderr cerrado = el proceso terminó. Si nunca llegó a escuchar los
+            // tres puertos, no arrancó: hay que DECIRLO. Callarse es lo que
+            // dejaba la pantalla en blanco esperando para siempre.
+            if !arrancado && !explicado {
+                let _ = tx
+                    .send(Event::Exited {
+                        reason: startup_hint(&arranque).to_string(),
+                        last_line: ultima,
+                    })
+                    .await;
             }
         });
 
@@ -601,6 +696,44 @@ mod tests {
         // y no el de una ruta inventada.
         let elegido = pick_docker_bin(&docker_candidates(), |_| false);
         assert_eq!(elegido, PathBuf::from("docker"));
+    }
+
+    /// El error que dejó a dos Mac sin arrancar y sin explicación. Un
+    /// contenedor sin `--privileged` no puede montar nada, y el mensaje crudo
+    /// del kernel no le dice al usuario qué hacer.
+    #[test]
+    fn un_contenedor_sin_privilegios_se_reconoce() {
+        let log = "mount /dev/urandom failed: Operation not permitted\n";
+        assert_eq!(startup_hint(log), "exit_sin_privilegios");
+        // También cuando lo que falla es /proc, ya dentro del chroot.
+        assert_eq!(
+            startup_hint("mount proc failed: Operation not permitted"),
+            "exit_sin_privilegios"
+        );
+    }
+
+    /// `docker run` escribe en el MISMO stderr que el wrapper, así que sus
+    /// fallos también se diagnostican aquí.
+    #[test]
+    fn los_fallos_de_docker_tambien_se_reconocen() {
+        for (log, esperado) in [
+            ("Unable to find image 'ecam:arm64' locally", "exit_sin_imagen"),
+            ("docker: Error response from daemon: driver failed: port is already allocated.", "exit_puerto_ocupado"),
+            ("Cannot connect to the Docker daemon at unix:///var/run/docker.sock.", "exit_sin_docker"),
+            ("permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock", "exit_socket_docker"),
+            ("write /app: no space left on device", "exit_sin_espacio"),
+            ("exec /app/wrapper: exec format error", "exit_arquitectura"),
+            ("algo que no sabemos interpretar", "exit_generico"),
+        ] {
+            assert_eq!(startup_hint(log), esperado, "log: {log}");
+        }
+    }
+
+    /// Un `Operation not permitted` de cualquier otra cosa no debe hacerse pasar
+    /// por falta de privilegios: mandaría a arreglar lo que no es.
+    #[test]
+    fn no_confunde_otros_operation_not_permitted() {
+        assert_eq!(startup_hint("chmod failed: Operation not permitted"), "exit_generico");
     }
 
     #[test]
