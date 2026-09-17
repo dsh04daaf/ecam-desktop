@@ -22,11 +22,28 @@ const DATA_DIR: &str = "/app/rootfs/data/data/com.apple.android.music/files";
 const VOLUME_MOUNT: &str = "/app/rootfs/data";
 const DATA_SUBPATH: &str = "data/com.apple.android.music/files";
 
-/// Dónde puede estar la base de la sesión, **relativa a `files/`**.
+/// Qué prueba que hay una cuenta dentro, **relativo a `files/`**.
 ///
-/// Son dos porque los dos builds del wrapper no coinciden: el x86 la mete en
-/// `mpl_db/` y el arm64 la deja al nivel de `files/`. Comprobado mirando una
-/// sesión de cada uno. El orden es el de preferencia.
+/// ⚠️ NO vale mirar `kvs.sqlitedb`: **medido**, el wrapper crea todas sus bases
+/// (`accounts`, `cookies`, `httpcache`, `kvs`) en el primer arranque, sin
+/// cuenta ninguna y sin haber hecho login — el x86 en `files/mpl_db/` y el
+/// arm64 directamente en `files/`. Mirar esos archivos daba:
+///   - falso NEGATIVO en Mac (se buscaba solo `mpl_db/`, que el arm64 no crea)
+///     → se iniciaba sesión, se entraba y el refresco devolvía al login;
+///   - y al "arreglarlo" mirando las dos rutas, falso POSITIVO en cuanto el
+///     contenedor arrancaba una vez → la app creía que había sesión, lanzaba el
+///     wrapper sin credenciales, y el `login failed` devolvía al login igual.
+///
+/// Estos dos los escribe el wrapper **sólo después de cachear la cuenta**
+/// (`write_storefront_id`/`write_music_token` en su `main.c`), o sea con sesión
+/// buena, en `base_dir` = `files/`, **igual en los dos builds**. Y los escribe
+/// ANTES de abrir los puertos, así que cuando llega el `Ready` ya están: no hay
+/// carrera. Se exige que no estén vacíos.
+const SESSION_MARKERS: [&str; 2] = ["STOREFRONT_ID", "MUSIC_TOKEN"];
+
+/// Lo que hay que borrar para cerrar sesión de verdad: las bases de la cuenta
+/// en las dos disposiciones, más los marcadores de arriba (si se dejan, la app
+/// seguiría creyendo que hay sesión).
 const SESSION_DB_PATHS: [&str; 2] = ["mpl_db/kvs.sqlitedb", "kvs.sqlitedb"];
 
 /// Dónde corre el wrapper.
@@ -476,17 +493,18 @@ impl Runtime {
         // Con Docker se mira el archivo EN EL HOST: el contenedor no está
         // encendido todavía cuando hay que decidir entre login y entrar.
         if matches!(self.backend, Backend::Docker { .. }) {
-            return SESSION_DB_PATHS
+            return SESSION_MARKERS
                 .iter()
                 .filter_map(|r| self.host_data_file(r))
-                .any(|db| db.exists());
+                .any(|f| std::fs::metadata(&f).map(|m| m.len() > 0).unwrap_or(false));
         }
         match self.backend {
             Backend::External => crate::wrapper::Wrapper::probe(&self.decrypt_port),
             _ => {
-                let prueba = SESSION_DB_PATHS
+                // `-s` = existe y no está vacío.
+                let prueba = SESSION_MARKERS
                     .iter()
-                    .map(|r| format!("[ -f {DATA_DIR}/{r} ]"))
+                    .map(|r| format!("[ -s {DATA_DIR}/{r} ]"))
                     .collect::<Vec<_>>()
                     .join(" || ");
                 self.run_in_distro(&prueba).await.unwrap_or(false)
@@ -517,11 +535,21 @@ impl Runtime {
                     }
                 }
             }
+            // Sin esto la app seguiría viendo sesión donde ya no hay cuenta.
+            for rel in SESSION_MARKERS {
+                let Some(f) = self.host_data_file(rel) else { continue };
+                match tokio::fs::remove_file(&f).await {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => return Err(e.into()),
+                }
+            }
             return Ok(());
         }
         let borrar = SESSION_DB_PATHS
             .iter()
             .flat_map(|r| ["", "-wal", "-shm"].map(move |s| format!("{DATA_DIR}/{r}{s}")))
+            .chain(SESSION_MARKERS.iter().map(|r| format!("{DATA_DIR}/{r}")))
             .collect::<Vec<_>>()
             .join(" ");
         self.run_in_distro(&format!("rm -f {borrar}")).await?;
@@ -660,6 +688,18 @@ impl Runtime {
 mod tests {
     use super::*;
 
+    /// Mismo backend pero con el volumen donde diga la prueba.
+    fn docker_en(dir: &std::path::Path) -> Runtime {
+        Runtime::new(
+            Backend::Docker {
+                image: "ecam:arm64".into(),
+                container: "ecam".into(),
+                data_dir: dir.to_path_buf(),
+            },
+            "127.0.0.1:10020",
+        )
+    }
+
     fn docker_backend() -> Runtime {
         Runtime::new(
             Backend::Docker {
@@ -726,32 +766,49 @@ mod tests {
         assert_eq!(elegido, PathBuf::from("docker"));
     }
 
-    /// El build arm64 del wrapper guarda la sesión en `files/kvs.sqlitedb` y el
-    /// x86 en `files/mpl_db/kvs.sqlitedb`. Mirando solo la segunda, en Mac se
-    /// iniciaba sesión, se entraba y el refresco de después devolvía al login.
+    /// Lo que de verdad dice si hay cuenta dentro.
+    ///
+    /// Las dos trampas medidas, una en cada dirección:
+    ///  - el arm64 no crea `mpl_db/`, así que buscar ahí daba SIEMPRE false en
+    ///    Mac: se iniciaba sesión y el refresco de después volvía al login;
+    ///  - y las bases (`kvs.sqlitedb` y compañía) las crea el wrapper en el
+    ///    primer arranque **sin login**, así que mirarlas da un falso positivo
+    ///    en cuanto el contenedor arranca una vez.
     #[tokio::test]
-    async fn la_sesion_se_encuentra_en_las_dos_rutas() {
-        for rel in ["mpl_db/kvs.sqlitedb", "kvs.sqlitedb"] {
-            let dir = std::env::temp_dir().join(format!("ecam-sesion-{}", rel.replace('/', "_")));
+    async fn la_sesion_se_mide_por_la_cuenta_cacheada_no_por_las_bases() {
+        let base = std::env::temp_dir().join("ecam-marcadores");
+        for (n, caso) in ["mpl_db/kvs.sqlitedb", "kvs.sqlitedb"].iter().enumerate() {
+            let dir = base.join(format!("bases{n}"));
             let _ = std::fs::remove_dir_all(&dir);
-            let rt = Runtime::new(
-                Backend::Docker {
-                    image: "ecam:arm64".into(),
-                    container: "ecam".into(),
-                    data_dir: dir.clone(),
-                },
-                "127.0.0.1:10020",
+            let rt = docker_en(&dir);
+            let f = dir.join(DATA_SUBPATH).join(caso);
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+            std::fs::write(&f, b"no soy una sesion").unwrap();
+            assert!(
+                !rt.has_session().await,
+                "{caso} lo crea el wrapper sin login: no puede contar como sesión"
             );
-            assert!(!rt.has_session().await, "sin nada no puede haber sesión ({rel})");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
 
-            let db = dir.join(DATA_SUBPATH).join(rel);
-            std::fs::create_dir_all(db.parent().unwrap()).unwrap();
-            std::fs::write(&db, b"x").unwrap();
-            assert!(rt.has_session().await, "no vio la sesión en {rel}");
+        // Los marcadores que el wrapper escribe tras cachear la cuenta: esos sí.
+        for marcador in SESSION_MARKERS {
+            let dir = base.join(format!("marcador-{marcador}"));
+            let _ = std::fs::remove_dir_all(&dir);
+            let rt = docker_en(&dir);
+            let f = dir.join(DATA_SUBPATH).join(marcador);
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+
+            // Vacío no vale: el wrapper lo deja así si no llegó a tener token.
+            std::fs::write(&f, b"").unwrap();
+            assert!(!rt.has_session().await, "{marcador} vacío no es una sesión");
+
+            std::fs::write(&f, b"XX-XX").unwrap();
+            assert!(rt.has_session().await, "no vio la cuenta por {marcador}");
 
             rt.sign_out().await.unwrap();
-            assert!(!db.exists(), "sign_out no borró {rel}");
-            assert!(!rt.has_session().await, "sigue habiendo sesión tras sign_out ({rel})");
+            assert!(!f.exists(), "sign_out dejó {marcador} sin borrar");
+            assert!(!rt.has_session().await, "sigue habiendo sesión tras sign_out");
             let _ = std::fs::remove_dir_all(&dir);
         }
     }
