@@ -22,6 +22,13 @@ const DATA_DIR: &str = "/app/rootfs/data/data/com.apple.android.music/files";
 const VOLUME_MOUNT: &str = "/app/rootfs/data";
 const DATA_SUBPATH: &str = "data/com.apple.android.music/files";
 
+/// Dónde puede estar la base de la sesión, **relativa a `files/`**.
+///
+/// Son dos porque los dos builds del wrapper no coinciden: el x86 la mete en
+/// `mpl_db/` y el arm64 la deja al nivel de `files/`. Comprobado mirando una
+/// sesión de cada uno. El orden es el de preferencia.
+const SESSION_DB_PATHS: [&str; 2] = ["mpl_db/kvs.sqlitedb", "kvs.sqlitedb"];
+
 /// Dónde corre el wrapper.
 #[derive(Debug, Clone)]
 pub enum Backend {
@@ -458,18 +465,32 @@ impl Runtime {
     }
 
     /// ¿Hay sesión guardada? Es lo que decide entre pedir login o entrar directo.
+    ///
+    /// ⚠️ Se prueban las DOS rutas porque **cada build del wrapper guarda la
+    /// sesión en un sitio distinto**: el x86 (distro WSL) la deja en
+    /// `files/mpl_db/`, y el arm64 de macOS el mismo juego de bases
+    /// (`accounts`, `cookies`, `httpcache`, `kvs`) directamente en `files/`.
+    /// Mirando solo `mpl_db` esto daba **siempre false en Mac**: se iniciaba
+    /// sesión, se entraba, y el refresco de después devolvía al login otra vez.
     pub async fn has_session(&self) -> bool {
         // Con Docker se mira el archivo EN EL HOST: el contenedor no está
         // encendido todavía cuando hay que decidir entre login y entrar.
-        if let Some(db) = self.host_data_file("mpl_db/kvs.sqlitedb") {
-            return db.exists();
+        if matches!(self.backend, Backend::Docker { .. }) {
+            return SESSION_DB_PATHS
+                .iter()
+                .filter_map(|r| self.host_data_file(r))
+                .any(|db| db.exists());
         }
         match self.backend {
             Backend::External => crate::wrapper::Wrapper::probe(&self.decrypt_port),
-            _ => self
-                .run_in_distro(&format!("[ -f {DATA_DIR}/mpl_db/kvs.sqlitedb ]"))
-                .await
-                .unwrap_or(false),
+            _ => {
+                let prueba = SESSION_DB_PATHS
+                    .iter()
+                    .map(|r| format!("[ -f {DATA_DIR}/{r} ]"))
+                    .collect::<Vec<_>>()
+                    .join(" || ");
+                self.run_in_distro(&prueba).await.unwrap_or(false)
+            }
         }
     }
 
@@ -480,23 +501,30 @@ impl Runtime {
     /// `.sqlitedb` deja ese WAL huérfano, y al crear la base nueva SQLite lo
     /// reaplica encima: resucita datos de la sesión cerrada.
     pub async fn sign_out(&self) -> Result<()> {
-        if let Some(db) = self.host_data_file("mpl_db/kvs.sqlitedb") {
+        // Las dos rutas posibles, por lo mismo que en `has_session`: borrar solo
+        // la de `mpl_db` dejaba la sesión viva en Mac.
+        if matches!(self.backend, Backend::Docker { .. }) {
             self.drop_stale_container().await;
-            // Los tres juntos. Que no exista ya no es un error: es justo lo que se buscaba.
-            for sufijo in ["", "-wal", "-shm"] {
-                let f = std::path::PathBuf::from(format!("{}{sufijo}", db.display()));
-                match tokio::fs::remove_file(&f).await {
-                    Ok(()) => {}
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(e) => return Err(e.into()),
+            for rel in SESSION_DB_PATHS {
+                let Some(db) = self.host_data_file(rel) else { continue };
+                // Los tres juntos. Que no exista ya no es un error: es justo lo que se buscaba.
+                for sufijo in ["", "-wal", "-shm"] {
+                    let f = std::path::PathBuf::from(format!("{}{sufijo}", db.display()));
+                    match tokio::fs::remove_file(&f).await {
+                        Ok(()) => {}
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(e) => return Err(e.into()),
+                    }
                 }
             }
             return Ok(());
         }
-        self.run_in_distro(&format!(
-            "rm -f {DATA_DIR}/mpl_db/kvs.sqlitedb {DATA_DIR}/mpl_db/kvs.sqlitedb-wal {DATA_DIR}/mpl_db/kvs.sqlitedb-shm"
-        ))
-        .await?;
+        let borrar = SESSION_DB_PATHS
+            .iter()
+            .flat_map(|r| ["", "-wal", "-shm"].map(move |s| format!("{DATA_DIR}/{r}{s}")))
+            .collect::<Vec<_>>()
+            .join(" ");
+        self.run_in_distro(&format!("rm -f {borrar}")).await?;
         Ok(())
     }
 
@@ -696,6 +724,36 @@ mod tests {
         // y no el de una ruta inventada.
         let elegido = pick_docker_bin(&docker_candidates(), |_| false);
         assert_eq!(elegido, PathBuf::from("docker"));
+    }
+
+    /// El build arm64 del wrapper guarda la sesión en `files/kvs.sqlitedb` y el
+    /// x86 en `files/mpl_db/kvs.sqlitedb`. Mirando solo la segunda, en Mac se
+    /// iniciaba sesión, se entraba y el refresco de después devolvía al login.
+    #[tokio::test]
+    async fn la_sesion_se_encuentra_en_las_dos_rutas() {
+        for rel in ["mpl_db/kvs.sqlitedb", "kvs.sqlitedb"] {
+            let dir = std::env::temp_dir().join(format!("ecam-sesion-{}", rel.replace('/', "_")));
+            let _ = std::fs::remove_dir_all(&dir);
+            let rt = Runtime::new(
+                Backend::Docker {
+                    image: "ecam:arm64".into(),
+                    container: "ecam".into(),
+                    data_dir: dir.clone(),
+                },
+                "127.0.0.1:10020",
+            );
+            assert!(!rt.has_session().await, "sin nada no puede haber sesión ({rel})");
+
+            let db = dir.join(DATA_SUBPATH).join(rel);
+            std::fs::create_dir_all(db.parent().unwrap()).unwrap();
+            std::fs::write(&db, b"x").unwrap();
+            assert!(rt.has_session().await, "no vio la sesión en {rel}");
+
+            rt.sign_out().await.unwrap();
+            assert!(!db.exists(), "sign_out no borró {rel}");
+            assert!(!rt.has_session().await, "sigue habiendo sesión tras sign_out ({rel})");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 
     /// El error que dejó a dos Mac sin arrancar y sin explicación. Un
