@@ -26,15 +26,17 @@ pub fn parse_url(url: &str) -> Option<Target> {
     static RE: Lazy<Regex> = Lazy::new(|| {
         // El trozo del nombre es OPCIONAL: las rooms llegan como
         // `/room/6786407674`, sin slug, y con el patrón anterior no casaban.
+        // El país también: Apple comparte `music.apple.com/song/x/123` sin él.
         Regex::new(
-            r"music\.apple\.com/([a-zA-Z]{2})/(album|song|playlist|artist|room|music-video)/(?:([^/?#]+)/)?([a-zA-Z0-9._-]+)",
+            r"music\.apple\.com/(?:([a-zA-Z]{2})/)?(album|song|playlist|artist|room|music-video)/(?:([^/?#]+)/)?([a-zA-Z0-9._-]+)",
         )
         .unwrap()
     });
     static SONG_PARAM: Lazy<Regex> = Lazy::new(|| Regex::new(r"[?&]i=(\d+)").unwrap());
 
     let c = RE.captures(url)?;
-    let storefront = c[1].to_lowercase();
+    // Vacío = el link no traía país; `download_url` pone el de la cuenta.
+    let storefront = c.get(1).map(|m| m.as_str().to_lowercase()).unwrap_or_default();
     let id = c[4].to_string();
     let only_song = SONG_PARAM.captures(url).map(|m| m[1].to_string());
 
@@ -221,9 +223,10 @@ async fn download_mv_item(ctx: &Ctx<'_>, id: &str, dir: &Path, num: u32, label: 
 /// Punto de entrada: cualquier URL de Apple Music.
 pub async fn download_url(ctx: &Ctx<'_>, url: &str) -> Result<Report> {
     let target = parse_url(url).ok_or_else(|| Error::Other(format!("URL no reconocida: {url}")))?;
+    let tienda = |sf: String| if sf.is_empty() { ctx.amp.storefront.clone() } else { sf };
     match target {
         Target::Album { storefront, id, only_song } => {
-            download_album(ctx, &storefront, &id, only_song.as_deref(), &ctx.cfg.output_dir.clone()).await
+            download_album(ctx, &tienda(storefront), &id, only_song.as_deref(), &ctx.cfg.output_dir.clone()).await
         }
         Target::Song { storefront, id } => {
             // Una canción suelta necesita su álbum para las etiquetas (número de
@@ -233,7 +236,7 @@ pub async fn download_url(ctx: &Ctx<'_>, url: &str) -> Result<Report> {
                 .as_str()
                 .ok_or_else(|| Error::Other("no se encontró el álbum de esa canción".into()))?
                 .to_string();
-            download_album(ctx, &storefront, &album_id, Some(&id), &ctx.cfg.output_dir.clone()).await
+            download_album(ctx, &tienda(storefront), &album_id, Some(&id), &ctx.cfg.output_dir.clone()).await
         }
         Target::Playlist { id, .. } => download_playlist(ctx, &id).await,
         Target::Artist { id, .. } => download_artist(ctx, &id).await,
@@ -550,6 +553,22 @@ mod tests {
             Some(Target::MusicVideo { .. })
         ));
         assert!(parse_url("https://open.spotify.com/album/x").is_none());
+    }
+
+    #[test]
+    fn un_link_sin_pais_tambien_se_reconoce() {
+        assert_eq!(
+            parse_url("https://music.apple.com/song/a-tu-vera/1817120945"),
+            Some(Target::Song { storefront: "".into(), id: "1817120945".into() })
+        );
+        assert_eq!(
+            parse_url("https://music.apple.com/album/1680989244?i=1680989615"),
+            Some(Target::Album { storefront: "".into(), id: "1680989244".into(), only_song: Some("1680989615".into()) })
+        );
+        assert!(matches!(
+            parse_url("https://music.apple.com/jp/album/1661268694?mt=1&app=music&at=11l6YE&ct=veweb"),
+            Some(Target::Album { ref storefront, ref id, only_song: None }) if storefront == "jp" && id == "1661268694"
+        ));
     }
 
     #[test]
