@@ -17,6 +17,11 @@ pub enum FailKind {
     WrapperDead,
     /// Error real de la descarga o del archivo.
     Failed,
+    /// No se intentó a propósito: el catálogo ya dice que no existe (no está en
+    /// la tienda de la cuenta, o no tiene la versión pedida, p.ej. Atmos). NO es
+    /// un fallo: se cuenta aparte y no se reintenta. Es lo que el bot aprendió
+    /// el 2026-09-17: contarlas como error llenaba el aviso final de ruido.
+    Skipped,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -37,6 +42,9 @@ impl TrackError {
     }
     pub fn failed(reason: impl Into<String>) -> Self {
         Self { reason: reason.into(), kind: FailKind::Failed }
+    }
+    pub fn skipped(reason: impl Into<String>) -> Self {
+        Self { reason: reason.into(), kind: FailKind::Skipped }
     }
 }
 

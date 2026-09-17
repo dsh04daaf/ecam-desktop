@@ -11,6 +11,9 @@ se prueba en Linux, carcasa de Tauri encima.
 | Runtime del wrapper (distro WSL propia, 49 MB) | probado en Windows |
 | Login con pantalla (usuario/clave + 2FA) | diseñado y documentado |
 | Core: audio ALAC/AAC/Atmos/Binaural | **probado end-to-end, salida idéntica al original** |
+| Core: catálogo viejo (AAC legacy) por Widevine | probado end-to-end (álbum 377826006, PCM idéntico al bot) |
+| Core: videoclips dentro de álbumes y playlists | probado end-to-end (*HIT ME HARD AND SOFT*) |
+| Core: omitidas (no está en la tienda / sin Atmos) aparte de los errores | probado end-to-end |
 | Core: letras, carátulas, artwork animado, etiquetas | hecho |
 | Core: music videos (Widevine, cbcs, mux propio) | hecho, falta probar con un vídeo real |
 | Carcasa Tauri + UI | pendiente |

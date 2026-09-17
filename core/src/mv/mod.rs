@@ -259,7 +259,7 @@ fn extract_key_and_urls(
     Ok((kid, urls, uri_prefix))
 }
 
-async fn content_key(
+pub(crate) async fn content_key(
     cfg: &Config,
     adam_id: &str,
     kid: &str,
@@ -519,10 +519,28 @@ fn safe_name(base: &str, fallback: &str) -> String {
 }
 
 /// Descarga un music video completo. Devuelve la ruta del .mp4 final.
-pub async fn download_music_video(cfg: &Config, amp: &Amp, mv_id: &str, base_dir: &Path) -> Result<PathBuf> {
+///
+/// `album_track_num`: el vídeo es un elemento de un álbum (p.ej. el último
+/// "tema" de HIT ME HARD AND SOFT). Entonces va directo a `base_dir` (la carpeta
+/// del álbum, sin subcarpeta) y se llama como las pistas: "11. Título (4K).mp4".
+pub async fn download_music_video(
+    cfg: &Config,
+    amp: &Amp,
+    mv_id: &str,
+    base_dir: &Path,
+    album_track_num: Option<u32>,
+) -> Result<PathBuf> {
+    // Sin media-user-token vale el music token de la cuenta del wrapper: es la
+    // misma cuenta y Apple lo acepta para el webPlayback y la licencia (probado
+    // en el bot y en AMDL el 2026-09-17).
+    let mut amp = amp.clone();
     if amp.media_user_token.trim().len() < 20 {
-        return Err(Error::NeedsUserToken);
+        match crate::amp::wrapper_music_token(&cfg.decrypt_port).await {
+            Some(t) if t.len() >= 20 => amp.media_user_token = t,
+            _ => return Err(Error::NeedsUserToken),
+        }
     }
+    let amp = &amp;
     let meta = amp.music_video(mv_id).await?;
     let attrs = meta["data"][0]["attributes"].clone();
     let name = attrs["name"].as_str().unwrap_or("").to_string();
@@ -535,10 +553,14 @@ pub async fn download_music_video(cfg: &Config, amp: &Amp, mv_id: &str, base_dir
     let audio_url = select_audio(&master, &master_url, &cfg.mv_audio_type)?;
 
     let title = if artist.is_empty() { name.clone() } else { format!("{artist} - {name}") };
-    let base = safe_name(&format!("{title} ({})", res_label(w, h)), mv_id);
+    let base = match album_track_num {
+        Some(n) => safe_name(&format!("{n:02}. {} ({})", if name.is_empty() { mv_id } else { &name }, res_label(w, h)), mv_id),
+        None => safe_name(&format!("{title} ({})", res_label(w, h)), mv_id),
+    };
 
     // Carpeta propia por vídeo: además del .mp4 pueden caer carátula y extras.
-    let dir = base_dir.join(&base);
+    // Dentro de un álbum, la carpeta del álbum.
+    let dir = if album_track_num.is_some() { base_dir.to_path_buf() } else { base_dir.join(&base) };
     tokio::fs::create_dir_all(&dir).await?;
     let out_path = dir.join(format!("{base}.mp4"));
     if out_path.exists() {

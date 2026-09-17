@@ -67,6 +67,8 @@ pub fn classify(err: &Error) -> Action {
             FailKind::Transient => Action::Retry,
             // Territorio, sin stream, sin suscripción: reintentar no cambia nada.
             FailKind::Unavailable => Action::GiveUp,
+            // Ya se sabía que no existe: no hay nada que reintentar.
+            FailKind::Skipped => Action::GiveUp,
             FailKind::Failed => {
                 if looks_session_dead(&t.reason) {
                     Action::RestartWrapperAndRetry

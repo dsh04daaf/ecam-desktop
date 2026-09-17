@@ -30,6 +30,10 @@ pub struct Entry {
     /// Carpeta donde quedó, para poder abrirla desde la app.
     pub folder: String,
     pub failed: Vec<Failure>,
+    /// No se intentaron: el catálogo ya decía que no existen (fuera de la tienda o
+    /// sin la versión pedida). No son fallos. `default` para leer historiales viejos.
+    #[serde(default)]
+    pub omitted: Vec<Failure>,
     #[serde(default)]
     pub cancelled: bool,
     #[serde(default)]
@@ -91,7 +95,7 @@ mod tests {
         let e = Entry {
             id: "1".into(), at: now(), name: "Discovery".into(), kind: "album".into(),
             quality: "ALAC".into(), ok: 14, skipped: 0, folder: "/musica".into(),
-            failed: vec![], cancelled: false, seconds: 42.0,
+            failed: vec![], omitted: vec![], cancelled: false, seconds: 42.0,
         };
         let json = serde_json::to_string(&e).unwrap();
         let back: Entry = serde_json::from_str(&json).unwrap();

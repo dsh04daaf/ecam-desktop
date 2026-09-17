@@ -194,6 +194,9 @@ struct TrackDone {
     detail: String,
     /// `true` = la sesión del wrapper está muerta; reintentar no sirve.
     fatal: bool,
+    /// `true` = no se intentó porque el catálogo ya decía que no existe (fuera de
+    /// la tienda o sin la versión pedida). No es un error: la UI lo pinta aparte.
+    skipped: bool,
 }
 
 /// Instala las credenciales de los music videos desde donde el usuario las
@@ -410,11 +413,13 @@ async fn download(
                     )
                 },
                 fatal: false,
+                skipped: false,
             },
             Err(e) => TrackDone {
                 job, index: i, total, ok: false,
                 name: String::new(),
                 detail: e.to_string(),
+                skipped: matches!(e, ecam_core::Error::Track(t) if t.kind == ecam_core::error::FailKind::Skipped),
                 // El core distingue "este track no se pudo" de "la sesión está
                 // muerta". Lo segundo NO se arregla reintentando: hay que
                 // relanzar el wrapper, y la UI necesita saberlo.
@@ -456,6 +461,7 @@ async fn download(
                 skipped: r.done.iter().filter(|d| d.skipped).count(),
                 folder: r.done.first().and_then(|d| d.path.parent().map(|p| p.display().to_string())).unwrap_or_default(),
                 failed: r.failed.iter().map(|(n, e)| history::Failure { name: n.clone(), reason: e.to_string() }).collect(),
+                omitted: r.skipped.iter().map(|(n, why)| history::Failure { name: n.clone(), reason: why.clone() }).collect(),
                 cancelled: cancel.is_cancelled(),
                 seconds: started.elapsed().as_secs_f32(),
             },
@@ -464,6 +470,7 @@ async fn download(
                 kind: quality_name.clone(), quality: String::new(),
                 ok: 0, skipped: 0, folder: String::new(),
                 failed: vec![history::Failure { name: url.clone(), reason: e.to_string() }],
+                omitted: Vec::new(),
                 cancelled: matches!(e, ecam_core::Error::Cancelled),
                 seconds: started.elapsed().as_secs_f32(),
             },
@@ -473,6 +480,7 @@ async fn download(
         let payload = match res {
             Ok(r) => serde_json::json!({
                 "job": job, "ok": true, "done": r.done.len(), "failed": r.failed.len(),
+                "skipped": r.skipped.len(),
                 "cancelled": cancel.is_cancelled(),
                 "path": r.done.first().and_then(|d| d.path.parent().map(|p| p.display().to_string())),
             }),

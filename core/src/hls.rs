@@ -22,7 +22,7 @@ pub fn attr<'a>(list: &'a [(String, String)], key: &str) -> Option<&'a str> {
     list.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
 }
 
-fn join(base: &str, rel: &str) -> String {
+pub(crate) fn join(base: &str, rel: &str) -> String {
     match Url::parse(base).and_then(|b| b.join(rel)) {
         Ok(u) => u.to_string(),
         Err(_) => rel.to_string(),

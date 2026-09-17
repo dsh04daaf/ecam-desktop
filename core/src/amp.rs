@@ -537,7 +537,8 @@ impl Amp {
                                 let ta = &t["attributes"];
                                 BrowseItem {
                                     id: t["id"].as_str().unwrap_or_default().into(),
-                                    kind: "song".into(),
+                                    // Un álbum puede traer videoclips: que se abran como vídeo.
+                                    kind: if t["type"].as_str() == Some("music-videos") { "music-video".into() } else { "song".into() },
                                     name: ta["name"].as_str().unwrap_or_default().into(),
                                     artist: ta["artistName"].as_str().unwrap_or_default().into(),
                                     extra: dur(ta["durationInMillis"].as_u64().unwrap_or(0)),
