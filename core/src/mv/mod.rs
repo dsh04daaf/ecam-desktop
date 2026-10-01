@@ -43,9 +43,16 @@ async fn webplayback_master(adam_id: &str, bearer: &str, mut_token: &str) -> Res
     v["songList"][0]["hls-playlist-url"]
         .as_str()
         .map(String::from)
-        // Este error casi siempre es el token, no la red: decirlo ahorra media
-        // hora de mirar el sitio equivocado.
-        .ok_or_else(|| Error::Other("el media-user-token parece caducado o incorrecto".into()))
+        // Sin motivo de Apple casi siempre es el token, no la red: decirlo ahorra
+        // media hora de mirar el sitio equivocado. Con motivo se dice el de Apple
+        // (2026-10-01: failureType 3082, restricción de contenido explícito en la
+        // cuenta, salía como "token caducado" con el token bien).
+        .ok_or_else(|| Error::Other(match v["customerMessage"].as_str() {
+            Some(m) if !m.trim().is_empty() => format!(
+                "Apple rechazó la reproducción (failureType={}): {}", v["failureType"], m.trim()
+            ),
+            _ => "el media-user-token parece caducado o incorrecto".into(),
+        }))
 }
 
 fn res_label(w: u32, h: u32) -> String {
