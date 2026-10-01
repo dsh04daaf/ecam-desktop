@@ -3,6 +3,13 @@
 Las versiones de Windows llevan tag `v*` y las de macOS `mac-v*`; el número es el
 mismo y el core es compartido, así que casi todo lo de abajo vale para las dos.
 
+## Sin publicar
+
+### El fallo de un music video dice el motivo de Apple
+Si webPlayback no devuelve el vídeo, el error lleva el `failureType` y el mensaje de Apple
+(p. ej. 3082: la cuenta tiene restricción de contenido explícito). Antes siempre culpaba al
+media-user-token, aunque estuviera bien.
+
 ## 0.2.4 — 2026-09-17
 
 ### El key server se detecta pidiéndole la plantilla, no abriendo un socket
