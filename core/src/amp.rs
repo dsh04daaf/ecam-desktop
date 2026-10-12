@@ -254,6 +254,28 @@ impl Amp {
         }
     }
 
+    /// Como `get`, para los LISTADOS (artista, room y la paginación): un timeout, un
+    /// corte o un 429/5xx de Apple se repite (3 intentos, espera corta) en vez de tirar
+    /// el artista entero por un fallo pasajero. Un 404 o un 401 no se repiten.
+    async fn get_listing(&self, path: &str, params: &[(&str, &str)]) -> Result<Value> {
+        const TRIES: u64 = 3;
+        let mut n = 1;
+        loop {
+            let r = self.get(path, params, false).await;
+            let pasajero = match &r {
+                Err(Error::Track(t)) => t.kind == crate::error::FailKind::Transient,
+                Err(Error::Api(m)) => listing_status_retryable(m),
+                _ => false,
+            };
+            if !pasajero || n >= TRIES {
+                return r;
+            }
+            tracing::warn!("listado: intento {n}/{TRIES} falló; se repite");
+            tokio::time::sleep(Duration::from_secs(2 * n)).await;
+            n += 1;
+        }
+    }
+
     /// Sigue el `next` de una relación hasta agotarla. Sin esto, las playlists
     /// y los álbumes largos se cortan en la primera página y nadie se entera.
     async fn paginate(&self, rel: &Value, extra: &[(&str, &str)]) -> Result<Vec<Value>> {
@@ -264,7 +286,7 @@ impl Amp {
             .unwrap_or_default();
         let mut next = rel.get("next").and_then(Value::as_str).map(String::from);
         while let Some(n) = next {
-            let page = self.get(&format!("{AMP}{n}"), extra, false).await?;
+            let page = self.get_listing(&format!("{AMP}{n}"), extra).await?;
             if let Some(arr) = page.get("data").and_then(Value::as_array) {
                 out.extend(arr.iter().cloned());
             }
@@ -334,10 +356,9 @@ impl Amp {
     /// Devuelve (nombre del artista, ids de sus álbumes).
     pub async fn artist_albums(&self, id: &str) -> Result<(String, Vec<String>)> {
         let data = self
-            .get(
+            .get_listing(
                 &format!("/v1/catalog/{}/artists/{id}", self.storefront),
                 &[("include", "albums"), ("l", &self.language)],
-                false,
             )
             .await?;
         let item = &data["data"][0];
@@ -354,10 +375,9 @@ impl Amp {
     /// `/catalog`, y necesita `platform=web` también al paginar.
     pub async fn room(&self, id: &str) -> Result<(String, Vec<(String, String)>)> {
         let data = self
-            .get(
+            .get_listing(
                 &format!("/v1/editorial/{}/rooms/{id}", self.storefront),
                 &[("platform", "web"), ("include", "contents"), ("l", &self.language)],
-                false,
             )
             .await?;
         let item = &data["data"][0];
@@ -597,10 +617,9 @@ impl Amp {
                 // Se piden los álbumes con su metadata, no solo los ids: si no,
                 // la vista del artista sería una lista de números.
                 let data = self
-                    .get(
+                    .get_listing(
                         &format!("/v1/catalog/{}/artists/{id}", self.storefront),
                         &[("include", "albums"), ("l", &self.language)],
-                        false,
                     )
                     .await?;
                 let item = &data["data"][0];
@@ -693,9 +712,25 @@ pub fn storefront_code(id: &str) -> Option<&'static str> {
     })
 }
 
+/// ¿El `amp-api respondió N` de `get` es un 429 o un 5xx (pasajero)?
+fn listing_status_retryable(msg: &str) -> bool {
+    msg.rsplit(' ')
+        .next()
+        .and_then(|c| c.parse::<u16>().ok())
+        .is_some_and(|c| c == 429 || c >= 500)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn el_listado_solo_repite_lo_pasajero() {
+        assert!(listing_status_retryable("amp-api respondió 503"));
+        assert!(listing_status_retryable("amp-api respondió 429"));
+        assert!(!listing_status_retryable("amp-api respondió 400"));
+        assert!(!listing_status_retryable("error decoding response body"));
+    }
 
     #[test]
     fn traduce_el_id_numerico_del_wrapper() {

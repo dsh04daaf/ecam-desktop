@@ -5,6 +5,11 @@ mismo y el core es compartido, así que casi todo lo de abajo vale para las dos.
 
 ## Sin publicar
 
+### El listado de un artista o room aguanta un fallo pasajero de Apple
+Si amp-api no contesta a tiempo (timeout), corta la conexión o responde 429/5xx al pedir los álbumes
+de un artista, los elementos de un room o una de sus páginas, se repite hasta 3 veces con una espera
+corta. Antes un solo timeout tiraba el artista entero. Un 404 o un 401 no se repiten.
+
 ### El fallo de un music video dice el motivo de Apple
 Si webPlayback no devuelve el vídeo, el error lleva el `failureType` y el mensaje de Apple
 (p. ej. 3082: la cuenta tiene restricción de contenido explícito). Antes siempre culpaba al
