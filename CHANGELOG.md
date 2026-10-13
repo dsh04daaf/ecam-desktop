@@ -5,6 +5,12 @@ mismo y el core es compartido, así que casi todo lo de abajo vale para las dos.
 
 ## Sin publicar
 
+### Un rechazo pasajero de Apple (5002) ya no tira la pista ni el vídeo
+Cuando `webPlayback` responde `failureType` 5002 ("An unknown error has occurred") la misma petición
+sale bien segundos después. Ahora se repite hasta 3 veces, en las pistas de catálogo antiguo y en los
+music videos. Si aun así Apple no deja reproducir, el fallo queda como pasajero (reintentable) y dice
+eso, en vez de «pista antigua que no se pudo descifrar».
+
 ### El listado de un artista o room aguanta un fallo pasajero de Apple
 Si amp-api no contesta a tiempo (timeout), corta la conexión o responde 429/5xx al pedir los álbumes
 de un artista, los elementos de un room o una de sus páginas, se repite hasta 3 veces con una espera

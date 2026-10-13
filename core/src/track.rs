@@ -144,9 +144,18 @@ pub async fn download_track(
         // 2) Respaldo: la playlist FairPlay (30:cbcp256) por el wrapper, como antes.
         let url = webplayback_media_url(&job.adam_id, &amp.bearer, &token)
             .await
-            .ok_or_else(|| Error::Track(TrackError::unavailable(format!(
-                "pista antigua que no se pudo descifrar ({legacy_error})"
-            ))))?;
+            .ok_or_else(|| {
+                // Si Apple no dejó reproducir (5002, pasajero) no es cosa de la pista.
+                if legacy_error.contains("failureType=\"5002\"") || legacy_error.contains("failureType=5002") {
+                    Error::Track(TrackError::transient(format!(
+                        "Apple rechazó la reproducción, es pasajero ({legacy_error})"
+                    )))
+                } else {
+                    Error::Track(TrackError::unavailable(format!(
+                        "pista antigua que no se pudo descifrar ({legacy_error})"
+                    )))
+                }
+            })?;
         let text = http().get(&url).header("User-Agent", UA).send().await?.text().await?;
         let segs = crate::hls::parse_media_playlist(&text, &url);
         if segs.is_empty() {
@@ -194,6 +203,13 @@ pub async fn download_track(
             .iter()
             .any(|s| s.key_uri.as_deref().is_some_and(|u| u.contains("://itunes.apple.com/afs_")))
     {
+        // No es la llave: Apple no dejó reproducir en el intento por Widevine (5002,
+        // pasajero). Se dice eso y queda como reintentable.
+        if legacy_error.contains("failureType=\"5002\"") || legacy_error.contains("failureType=5002") {
+            return Err(Error::Track(TrackError::transient(format!(
+                "Apple rechazó la reproducción, es pasajero ({legacy_error})"
+            ))));
+        }
         return Err(Error::Track(TrackError::unavailable(format!(
             "pista antigua (llave afs_) que no se pudo descifrar ({legacy_error})"
         ))));
@@ -513,18 +529,17 @@ async fn legacy_widevine(
     progress: Option<&Progress>,
 ) -> Result<tempfile::NamedTempFile> {
     let body = serde_json::json!({ "salableAdamId": adam_id });
-    let v: Value = http()
-        .post("https://play.music.apple.com/WebObjects/MZPlay.woa/wa/webPlayback")
-        .header("Content-Type", "application/json")
-        .header("Origin", "https://music.apple.com")
-        .header("Referer", "https://music.apple.com/")
-        .header("User-Agent", UA)
-        .header("Authorization", format!("Bearer {}", amp.bearer))
-        .header("x-apple-music-user-token", music_token)
-        .json(&body)
-        .send()
-        .await?
-        .json()
+    let v: Value = crate::amp::webplayback_post(|| {
+        http()
+            .post("https://play.music.apple.com/WebObjects/MZPlay.woa/wa/webPlayback")
+            .header("Content-Type", "application/json")
+            .header("Origin", "https://music.apple.com")
+            .header("Referer", "https://music.apple.com/")
+            .header("User-Agent", UA)
+            .header("Authorization", format!("Bearer {}", amp.bearer))
+            .header("x-apple-music-user-token", music_token)
+            .json(&body)
+    })
         .await?;
     let media_url = v["songList"][0]["assets"]
         .as_array()
@@ -605,19 +620,17 @@ async fn legacy_widevine(
 /// Respaldo para el catálogo viejo: la playlist FairPlay que sirve `webPlayback`.
 async fn webplayback_media_url(adam_id: &str, bearer: &str, music_token: &str) -> Option<String> {
     let body = serde_json::json!({ "salableAdamId": adam_id });
-    let v: Value = http()
-        .post("https://play.music.apple.com/WebObjects/MZPlay.woa/wa/webPlayback")
-        .header("Content-Type", "application/json")
-        .header("Origin", "https://music.apple.com")
-        .header("Referer", "https://music.apple.com/")
-        .header("User-Agent", UA)
-        .header("Authorization", format!("Bearer {bearer}"))
-        .header("x-apple-music-user-token", music_token)
-        .json(&body)
-        .send()
-        .await
-        .ok()?
-        .json()
+    let v: Value = crate::amp::webplayback_post(|| {
+        http()
+            .post("https://play.music.apple.com/WebObjects/MZPlay.woa/wa/webPlayback")
+            .header("Content-Type", "application/json")
+            .header("Origin", "https://music.apple.com")
+            .header("Referer", "https://music.apple.com/")
+            .header("User-Agent", UA)
+            .header("Authorization", format!("Bearer {bearer}"))
+            .header("x-apple-music-user-token", music_token)
+            .json(&body)
+    })
         .await
         .ok()?;
 
