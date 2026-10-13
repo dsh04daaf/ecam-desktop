@@ -712,6 +712,30 @@ pub fn storefront_code(id: &str) -> Option<&'static str> {
     })
 }
 
+/// POST a `webPlayback` repitiendo el rechazo pasajero de Apple. El `failureType`
+/// 5002 ("An unknown error has occurred") no es de la pista ni de la cuenta: la misma
+/// petición sale bien segundos después (2026-10-06: una pista legacy rechazada en la
+/// llamada de Widevine y servida en la de FairPlay un segundo más tarde). Cualquier
+/// otra respuesta (3082, sin motivo) se devuelve como llegó.
+pub(crate) async fn webplayback_post(build: impl Fn() -> reqwest::RequestBuilder) -> Result<Value> {
+    const TRIES: u64 = 3;
+    let mut n = 1;
+    loop {
+        let v: Value = build().send().await?.json().await?;
+        if n >= TRIES || !webplayback_5002(&v) {
+            return Ok(v);
+        }
+        tracing::warn!("webPlayback: rechazo 5002 de Apple, intento {n}/{TRIES}; se repite");
+        tokio::time::sleep(Duration::from_secs(2 * n)).await;
+        n += 1;
+    }
+}
+
+fn webplayback_5002(v: &Value) -> bool {
+    v["songList"].as_array().map_or(true, |a| a.is_empty())
+        && (v["failureType"].as_str() == Some("5002") || v["failureType"].as_u64() == Some(5002))
+}
+
 /// ¿El `amp-api respondió N` de `get` es un 429 o un 5xx (pasajero)?
 fn listing_status_retryable(msg: &str) -> bool {
     msg.rsplit(' ')
@@ -723,6 +747,16 @@ fn listing_status_retryable(msg: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn webplayback_solo_repite_el_5002() {
+        use serde_json::json;
+        assert!(webplayback_5002(&json!({"failureType": "5002", "customerMessage": "An unknown error has occurred"})));
+        assert!(webplayback_5002(&json!({"failureType": 5002})));
+        assert!(!webplayback_5002(&json!({"failureType": "3082"})));
+        assert!(!webplayback_5002(&json!({})));
+        assert!(!webplayback_5002(&json!({"songList": [{"assets": []}], "failureType": "5002"})));
+    }
 
     #[test]
     fn el_listado_solo_repite_lo_pasajero() {

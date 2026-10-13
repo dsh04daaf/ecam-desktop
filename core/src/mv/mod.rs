@@ -26,18 +26,17 @@ const MV_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.3
 
 /// Master playlist del vídeo.
 async fn webplayback_master(adam_id: &str, bearer: &str, mut_token: &str) -> Result<String> {
-    let v: Value = http()
-        .post(WEBPLAYBACK)
-        .header("Content-Type", "application/json")
-        .header("Origin", "https://music.apple.com")
-        .header("Referer", "https://music.apple.com/")
-        .header("User-Agent", MV_UA)
-        .header("Authorization", format!("Bearer {bearer}"))
-        .header("x-apple-music-user-token", mut_token)
-        .json(&serde_json::json!({ "salableAdamId": adam_id }))
-        .send()
-        .await?
-        .json()
+    let v: Value = crate::amp::webplayback_post(|| {
+        http()
+            .post(WEBPLAYBACK)
+            .header("Content-Type", "application/json")
+            .header("Origin", "https://music.apple.com")
+            .header("Referer", "https://music.apple.com/")
+            .header("User-Agent", MV_UA)
+            .header("Authorization", format!("Bearer {bearer}"))
+            .header("x-apple-music-user-token", mut_token)
+            .json(&serde_json::json!({ "salableAdamId": adam_id }))
+    })
         .await?;
 
     v["songList"][0]["hls-playlist-url"]
